@@ -269,8 +269,9 @@ class ControlProcessor(nn.Module):
         input_dim: int = 6,
         use_pe: bool = True,
         num_frequencies: int = 4,
-        hidden_dim: Optional[int] = None,
-        output_dim: Optional[int] = None
+        hidden_dim: int = 128,
+        output_dim: int = 64,
+        use_layer_norm: bool = True
     ):
         super().__init__()
         
@@ -287,26 +288,34 @@ class ControlProcessor(nn.Module):
         
         self.pe_dim = pe_dim
         
-        # Optional MLP for feature extraction
-        if hidden_dim is not None and output_dim is not None:
-            self.mlp = nn.Sequential(
-                nn.Linear(pe_dim, hidden_dim),
-                nn.ReLU(inplace=True),
-                nn.Linear(hidden_dim, output_dim)
-            )
-            self.output_dim = output_dim
-        else:
-            self.mlp = None
-            self.output_dim = pe_dim
+        assert output_dim is not None, "output_dim must be specified for TriPlane+FiLM"
+
+        self.mlp = nn.Sequential(
+            nn.Linear(pe_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim) if use_layer_norm else nn.Identity(),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim) if use_layer_norm else nn.Identity(),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, output_dim)
+        )
+        self.output_dim = output_dim
         
         # Register frequency bands as buffer
         if use_pe:
             freq_bands = 2.0 ** torch.linspace(0.0, num_frequencies - 1, num_frequencies)
             self.register_buffer('freq_bands', freq_bands)
+            
+        self._init_weights()
         
-        print(f"[ControlProcessor] Input dim: {input_dim}")
-        print(f"[ControlProcessor] PE: {use_pe} (frequencies: {num_frequencies})")
-        print(f"[ControlProcessor] Output dim: {self.output_dim}")
+        print(f"[ControlProcessor] Input: {input_dim} → PE: {pe_dim} → MLP → Output: {output_dim}")
+    
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
     
     def positional_encoding(self, x: torch.Tensor) -> torch.Tensor:
         """Apply positional encoding to input."""
@@ -332,107 +341,6 @@ class ControlProcessor(nn.Module):
         """
         # Apply positional encoding
         x = self.positional_encoding(control_vec)
-        
-        # Optional MLP
-        if self.mlp is not None:
-            x = self.mlp(x)
+        x = self.mlp(x)
         
         return x
-
-
-# ============================================================================
-# Testing
-# ============================================================================
-
-def test_triplane_field():
-    """Test TriPlaneField functionality."""
-    print("=" * 70)
-    print("Testing TriPlaneField")
-    print("=" * 70)
-    
-    config = {
-        'resolution': [64, 64, 64],
-        'output_coordinate_dim': 32
-    }
-    
-    triplane = TriPlaneField(
-        bounds=1.6,
-        planeconfig=config,
-        multires=[1, 2, 4]
-    )
-    
-    print(f"\nConfiguration:")
-    print(f"  Bounds: 1.6")
-    print(f"  Base resolution: {config['resolution']}")
-    print(f"  Feature dim per scale: {config['output_coordinate_dim']}")
-    print(f"  Multi-res: [1, 2, 4]")
-    print(f"  Total feature dim: {triplane.feat_dim}")
-    
-    # Count parameters
-    num_params = sum(p.numel() for p in triplane.parameters() if p.requires_grad)
-    print(f"  Trainable parameters: {num_params:,}")
-    
-    # Test forward pass
-    batch_size = 1000
-    pts = torch.randn(batch_size, 3) * 1.0  # Random points in scene
-    
-    features = triplane(pts)
-    
-    print(f"\nForward pass:")
-    print(f"  Input shape: {pts.shape}")
-    print(f"  Output shape: {features.shape}")
-    print(f"  Feature range: [{features.min():.3f}, {features.max():.3f}]")
-    
-    # Test gradient flow
-    pts.requires_grad = True
-    features = triplane(pts)
-    loss = features.sum()
-    loss.backward()
-    
-    print(f"\nGradient check:")
-    print(f"  Input gradient exists: {pts.grad is not None}")
-    
-    print("\n" + "=" * 70)
-    print("✓ TriPlaneField test passed!")
-    print("=" * 70)
-
-
-def test_control_processor():
-    """Test ControlProcessor functionality."""
-    print("\n" + "=" * 70)
-    print("Testing ControlProcessor")
-    print("=" * 70)
-    
-    processor = ControlProcessor(
-        input_dim=6,
-        use_pe=True,
-        num_frequencies=4,
-        hidden_dim=64,
-        output_dim=32
-    )
-    
-    print(f"\nConfiguration:")
-    print(f"  Input dim: 6")
-    print(f"  PE frequencies: 4")
-    print(f"  PE dim: {processor.pe_dim}")
-    print(f"  Hidden dim: 64")
-    print(f"  Output dim: {processor.output_dim}")
-    
-    # Test forward pass
-    batch_size = 1000
-    control = torch.randn(batch_size, 6) * 3.14
-    
-    features = processor(control)
-    
-    print(f"\nForward pass:")
-    print(f"  Input shape: {control.shape}")
-    print(f"  Output shape: {features.shape}")
-    
-    print("\n" + "=" * 70)
-    print("✓ ControlProcessor test passed!")
-    print("=" * 70)
-
-
-if __name__ == "__main__":
-    test_triplane_field()
-    test_control_processor()

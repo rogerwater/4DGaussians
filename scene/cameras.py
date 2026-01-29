@@ -18,7 +18,7 @@ class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", time = 0, control_vec = None,
-                 mask = None, camera_idx = 0, depth = None
+                 mask = None, camera_idx = 0, depth = None, sample_idx = 0
                  ):
         super(Camera, self).__init__()
 
@@ -31,6 +31,7 @@ class Camera(nn.Module):
         self.image_name = image_name
         self.time = time
         self.camera_idx = camera_idx
+        self.sample_idx = sample_idx
         
         if control_vec is not None:
             if isinstance(control_vec, np.ndarray):

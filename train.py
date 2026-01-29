@@ -34,6 +34,8 @@ import copy
 from gmflow.gmflow import build_gmflow
 from gmflow.config import get_cfg as get_gmflow_cfg
 from utils.flow_utils import calculate_gs_flow, flow_to_image
+from utils.feature_analyzer import HexPlaneAnalyzer
+from utils.triplane_film_analyzer import TriPlaneFiLMAnalyzer
 
 
 to8b = lambda x : (255*np.clip(x.cpu().numpy(),0,1)).astype(np.uint8)
@@ -48,20 +50,26 @@ except ImportError:
 def build_frame_pair_index(cameras):
     from collections import defaultdict
     
-    camera_frames = defaultdict(list)
+    trajectory_frames = defaultdict(list)
     for cam in cameras:
         cam_idx = getattr(cam, 'camera_idx', 0)
-        camera_frames[cam_idx].append((cam.uid, cam.time))
-        
-    for cam_idx in camera_frames:
-        camera_frames[cam_idx].sort(key=lambda x: x[1])
+        sample_idx = getattr(cam, 'sample_idx', 0)
+        trajectory_frames[(cam_idx, sample_idx)].append((cam.uid, cam.time))
+    
+    for key in trajectory_frames:
+        trajectory_frames[key].sort(key=lambda x: x[1])
         
     uid_to_next = {}
-    for cam_idx, frames in camera_frames.items():
+    for (cam_idx, sample_idx), frames in trajectory_frames.items():
         for i in range(len(frames) - 1):
             current_uid = frames[i][0]
             next_uid = frames[i + 1][0]
             uid_to_next[current_uid] = next_uid
+    
+    num_trajectories = len(trajectory_frames)
+    num_pairs = len(uid_to_next)
+    print(f"[Frame Pairing] Found {num_trajectories} trajectories (camera_idx, sample_idx combinations)")
+    
     return uid_to_next
 
 
@@ -106,6 +114,37 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     ema_psnr_for_log = 0.0
 
     final_iter = train_iter
+    
+    # Initialize Feature Analyzer for fine stage
+    """
+    feature_analyzer = None
+    if stage == "fine" and hasattr(gaussians, '_deformation'):
+        try:
+            feature_analyzer = HexPlaneAnalyzer(
+                deformation_net=gaussians._deformation,
+                config=hyper,
+                num_sample_positions=2000,
+                num_sample_controls=50,
+                enable_tsne=False  # t-SNE很慢，默认关闭
+            )
+            print("[FeatureAnalyzer] Initialized successfully for fine stage")
+        except Exception as e:
+            print(f"[FeatureAnalyzer] Failed to initialize: {e}")
+            feature_analyzer = None
+    """
+    feature_analyzer = None
+    if stage == "fine" and hasattr(gaussians, '_deformation'):
+        try:
+            feature_analyzer = TriPlaneFiLMAnalyzer(
+                deformation_net=gaussians._deformation,
+                config=hyper,
+                num_sample_positions=2000,
+                num_sample_actions=100,
+                enable_tsne=True
+            )
+            print("[FeatureAnalyzer] Initialized TriPlaneFiLMAnalyzer")
+        except Exception as e:
+            print(f"[FeatureAnalyzer] Failed: {e}")
     
     progress_bar = tqdm(range(first_iter, final_iter), desc="Training progress")
     first_iter += 1
@@ -445,10 +484,17 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             # Log and save
             timer.pause()
             training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type, 
-                            gs_flow_list, flow_2d_gt_list, flow_viewpoint_list)
+                            gs_flow_list, flow_2d_gt_list, flow_viewpoint_list, L_depth=L_depth, Lflow=Lflow)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration, stage)
+                
+                # Analyze HexPlane features when saving checkpoint
+                if feature_analyzer is not None and stage == "fine":
+                    # print(f"\n[ITER {iteration}] Analyzing HexPlane features...")
+                    # feature_analyzer.analyze_and_log(tb_writer, iteration, scene)
+                    print(f"\n[ITER {iteration}] Analyzing TriPlane+FiLM features...")
+                    feature_analyzer.analyze_and_log(tb_writer, iteration, scene)
             if dataset.render_process:
                 if (iteration < 1000 and iteration % 10 == 9) \
                     or (iteration < 3000 and iteration % 50 == 49) \
@@ -540,11 +586,18 @@ def prepare_output_and_logger(expname):
 
 
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, 
-                    renderFunc, renderArgs, stage, dataset_type, gs_flow_list=None, flow_2d_gt_list=None, flow_viewpoint_list=None):
+                    renderFunc, renderArgs, stage, dataset_type, gs_flow_list=None, flow_2d_gt_list=None, flow_viewpoint_list=None,
+                    L_depth=None, Lflow=None):
     if tb_writer:
         tb_writer.add_scalar(f'{stage}/train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar(f'{stage}/train_loss_patchestotal_loss', loss.item(), iteration)
         tb_writer.add_scalar(f'{stage}/iter_time', elapsed, iteration)
+        
+        if L_depth is not None:
+            tb_writer.add_scalar(f'{stage}/train_loss_patches/depth_loss', L_depth.item(), iteration)
+        
+        if Lflow is not None:
+            tb_writer.add_scalar(f'{stage}/train_loss_patches/flow_loss', Lflow.item(), iteration)
         
     
     # Report test and samples of training set
@@ -564,14 +617,17 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 gs_flow_normalized[0] = gs_flow[0] / W
                 gs_flow_normalized[1] = gs_flow[1] / H 
                 
-                flow_error = torch.abs(gs_flow_normalized - flow_2d_gt).mean().item()
+                flow_gt_normalized = flow_2d_gt.clone()
+                flow_gt_normalized[0] = flow_2d_gt[0] / W
+                flow_gt_normalized[1] = flow_2d_gt[1] / H
+                
+                flow_error = torch.abs(gs_flow_normalized - flow_gt_normalized).mean().item()
                 flow_errors.append(flow_error)
                 
-                flow_gt_vis = flow_to_image(flow_2d_gt.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
+                flow_gt_vis = flow_to_image(flow_gt_normalized.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
+                gs_flow_vis = flow_to_image(gs_flow_normalized.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
                 
-                gs_flow_vis = flow_to_image(gs_flow.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
-                
-                flow_diff = torch.abs(gs_flow_normalized - flow_2d_gt) * 10
+                flow_diff = torch.abs(gs_flow_normalized - flow_gt_normalized) * 10
                 flow_diff_vis = flow_to_image(flow_diff.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
                 
                 save_name = f"train_{viewpoint.image_name}"
@@ -595,6 +651,37 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             if len(flow_errors) > 0:
                 avg_error = sum(flow_errors) / len(flow_errors)
                 print(f"[Flow] Training batch flow error: {avg_error:.6f}")
+
+                if tb_writer:
+                    tb_writer.add_scalar(f'{stage}/flow/avg_flow_error', avg_error, iteration)
+                    
+                    for viz_idx in range(min(3, len(gs_flow_list))):
+                        gs_flow = gs_flow_list[viz_idx]
+                        flow_2d_gt = flow_2d_gt_list[viz_idx]
+                        viewpoint = flow_viewpoint_list[viz_idx]
+                        
+                        H, W = gs_flow.shape[1], gs_flow.shape[2]
+                        gs_flow_norm = gs_flow.clone()
+                        gs_flow_norm[0] = gs_flow[0] / W
+                        gs_flow_norm[1] = gs_flow[1] / H
+                        
+                        flow_gt_norm = flow_2d_gt.clone()
+                        flow_gt_norm[0] = flow_2d_gt[0] / W
+                        flow_gt_norm[1] = flow_2d_gt[1] / H
+                        
+                        flow_gt_vis = flow_to_image(flow_gt_norm.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=False)
+                        gs_flow_vis = flow_to_image(gs_flow_norm.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=False)
+                        
+                        flow_diff = torch.abs(gs_flow_norm - flow_gt_norm) * 10
+                        flow_diff_vis = flow_to_image(flow_diff.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=False)
+                        
+                        flow_gt_tensor = torch.from_numpy(flow_gt_vis).permute(2, 0, 1).float() / 255.0
+                        gs_flow_tensor = torch.from_numpy(gs_flow_vis).permute(2, 0, 1).float() / 255.0
+                        flow_diff_tensor = torch.from_numpy(flow_diff_vis).permute(2, 0, 1).float() / 255.0
+                        
+                        tb_writer.add_image(f'{stage}/flow/view_{viewpoint.image_name}/gt_flow', flow_gt_tensor, iteration)
+                        tb_writer.add_image(f'{stage}/flow/view_{viewpoint.image_name}/gs_flow', gs_flow_tensor, iteration)
+                        tb_writer.add_image(f'{stage}/flow/view_{viewpoint.image_name}/flow_diff', flow_diff_tensor, iteration)
              
         validation_configs = ({'name': 'test', 'cameras' : [scene.getTestCameras()[idx % len(scene.getTestCameras())] for idx in range(10, 5000, 299)]},
                               {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(10, 5000, 299)]})
@@ -634,6 +721,11 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar(f'{stage}/total_points', scene.gaussians.get_xyz.shape[0], iteration)
             tb_writer.add_scalar(f'{stage}/deformation_rate', scene.gaussians._deformation_table.sum()/scene.gaussians.get_xyz.shape[0], iteration)
             tb_writer.add_histogram(f"{stage}/scene/motion_histogram", scene.gaussians._deformation_accum.mean(dim=-1)/100, iteration,max_bins=500)
+            
+            if L_depth is not None:
+                tb_writer.add_scalar(f'{stage}/eval/depth_loss', L_depth.item(), iteration)
+            if Lflow is not None:
+                tb_writer.add_scalar(f'{stage}/eval/flow_loss', Lflow.item(), iteration)
         
         torch.cuda.empty_cache()
         
@@ -658,8 +750,8 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000])
+    parser.add_argument("--test_iterations", nargs="+", type=int, default=[1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000, 14000, 15000, 16000, 17000, 18000, 19000, 20000])
+    parser.add_argument("--save_iterations", nargs="+", type=int, default=[1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000, 14000, 15000, 16000, 17000, 18000, 19000, 20000])
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default = None)

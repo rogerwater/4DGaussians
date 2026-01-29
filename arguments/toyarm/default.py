@@ -6,19 +6,19 @@ ModelHiddenParams = dict(
      'resolution': [128, 128, 128, 50] 
     },
     multires = [1, 2, 4], 
-    defor_depth = 1,
-    net_width = 128, 
+    defor_depth = 3,
+    net_width = 256, 
     plane_tv_weight = 0.001, 
     time_smoothness_weight = 0.01, 
     l1_time_planes = 0.0001, 
     no_do = True,  
     no_dshs = True,  
-    no_ds = True,  
+    no_ds = False,  
     empty_voxel = False,
     render_process = False,
     static_mlp = False,
-    control_input_dim = 6,
-    control_hidden_dim = 128,  
+    control_input_dim = 8,
+    control_hidden_dim = 256,  
     control_use_pe = True,
     control_num_frequencies = 4,
     control_activation = 'relu'
@@ -39,5 +39,5 @@ OptimizationParams = dict(
     lambda_depth = 0.2,
     depth_scale = 1000.0,
     use_gmflow = False,
-    flow_loss_weight = 0.2
+    flow_loss_weight = 1.0
 )

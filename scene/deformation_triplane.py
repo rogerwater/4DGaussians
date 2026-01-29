@@ -1,16 +1,3 @@
-#
-# Deformation Network with TriPlane and Multi-head FiLM Fusion
-#
-# This implementation uses TriPlane for spatial encoding with Multi-head FiLM 
-# (Feature-wise Linear Modulation) for control signal fusion.
-#
-# Key features:
-# 1. TriPlane only encodes spatial geometry (XY, XZ, YZ planes)
-# 2. Multi-head FiLM: Control signals generate γ (scale) and β (shift) for each layer
-# 3. Residual connections preserve original spatial information
-# 4. More expressive than simple concatenation
-#
-
 import math
 import torch
 import torch.nn as nn
@@ -27,20 +14,6 @@ from utils.graphics_utils import batch_quaternion_multiply
 # ============================================================================
 
 class FiLMLayer(nn.Module):
-    """
-    Feature-wise Linear Modulation (FiLM) Layer.
-    
-    Applies affine transformation to features based on conditioning signal:
-        output = γ * input + β
-    
-    where γ (scale) and β (shift) are generated from the conditioning signal.
-    
-    Args:
-        feature_dim: Dimension of input features to modulate
-        condition_dim: Dimension of conditioning signal
-        hidden_dim: Hidden dimension for γ/β generation MLP
-    """
-    
     def __init__(self, feature_dim: int, condition_dim: int, hidden_dim: int = 64):
         super(FiLMLayer, self).__init__()
         
@@ -50,30 +23,22 @@ class FiLMLayer(nn.Module):
         self.film_generator = nn.Sequential(
             nn.Linear(condition_dim, hidden_dim),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
             nn.Linear(hidden_dim, feature_dim * 2)  # γ and β
         )
         
-        # Initialize to identity transformation: γ=1, β=0
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize weights so that initial output is identity (γ=1, β=0)."""
-        nn.init.zeros_(self.film_generator[-1].weight)
-        nn.init.zeros_(self.film_generator[-1].bias)
-        # Set γ bias to 1 for identity
-        self.film_generator[-1].bias.data[:self.feature_dim] = 1.0
+        nn.init.xavier_uniform_(self.film_generator[0].weight, gain=1.0)
+        nn.init.zeros_(self.film_generator[0].bias)
+        
+        nn.init.normal_(self.film_generator[-1].weight, std=0.01)
+        nn.init.normal_(self.film_generator[-1].bias, std=0.01)
+        
+        self.film_generator[-1].bias.data[:self.feature_dim] += 1.0
     
     def forward(self, features: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        """
-        Apply FiLM modulation.
-        
-        Args:
-            features: [N, feature_dim] - Features to modulate
-            condition: [N, condition_dim] - Conditioning signal
-            
-        Returns:
-            modulated: [N, feature_dim] - Modulated features
-        """
         # Generate γ and β
         film_params = self.film_generator(condition)
         gamma = film_params[:, :self.feature_dim]
@@ -86,24 +51,24 @@ class FiLMLayer(nn.Module):
 
 
 class FiLMBlock(nn.Module):
-    """
-    FiLM Block with Linear layer + FiLM modulation + Activation.
-    
-    Architecture:
-        input -> Linear -> FiLM(γ, β) -> ReLU -> output
-    """
-    
     def __init__(
         self, 
         in_dim: int, 
         out_dim: int, 
         condition_dim: int,
         hidden_dim: int = 64,
-        activation: str = 'relu'
+        activation: str = 'relu',
+        use_layer_norm: bool = True
     ):
         super(FiLMBlock, self).__init__()
         
         self.linear = nn.Linear(in_dim, out_dim)
+        
+        if use_layer_norm:
+            self.norm = nn.LayerNorm(out_dim)
+        else:
+            self.norm = nn.Identity()
+        
         self.film = FiLMLayer(out_dim, condition_dim, hidden_dim)
         
         if activation == 'relu':
@@ -114,52 +79,32 @@ class FiLMBlock(nn.Module):
             self.activation = nn.SiLU(inplace=True)
         else:
             self.activation = nn.ReLU(inplace=True)
+            
+        if in_dim == out_dim:
+            self.skip = nn.Identity()
+        else:
+            self.skip = nn.Linear(in_dim, out_dim)
     
     def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
+        identity = self.skip(x)
         
-        Args:
-            x: [N, in_dim] - Input features
-            condition: [N, condition_dim] - Conditioning signal
-            
-        Returns:
-            output: [N, out_dim] - Output features
-        """
         h = self.linear(x)
+        h = self.norm(h)
         h = self.film(h, condition)
         h = self.activation(h)
-        return h
+        
+        return h + identity
 
 
 class MultiHeadFiLMDecoder(nn.Module):
-    """
-    Multi-head FiLM Decoder with Residual Connections.
-    
-    Architecture:
-        spatial_feat ─┬─> FiLMBlock1 ─> FiLMBlock2 ─> ... ─> FiLMBlockN ─┬─> output
-                      │                                                  │
-                      └──────────────── Residual Projection ─────────────┘
-    
-    Each FiLM block is modulated by the control signal, allowing the network
-    to learn how control affects spatial features at each layer.
-    
-    Args:
-        spatial_dim: Dimension of spatial features from TriPlane
-        control_dim: Dimension of control features (after PE)
-        hidden_dim: Hidden dimension of FiLM blocks
-        num_layers: Number of FiLM blocks
-        film_hidden: Hidden dimension for FiLM γ/β generation
-    """
-    
     def __init__(
         self,
         spatial_dim: int,
         control_dim: int,
         hidden_dim: int = 128,
-        num_layers: int = 2,
+        num_layers: int = 3,
         film_hidden: int = 64,
-        use_residual: bool = True
+        use_layer_norm: bool = True
     ):
         super(MultiHeadFiLMDecoder, self).__init__()
         
@@ -167,58 +112,35 @@ class MultiHeadFiLMDecoder(nn.Module):
         self.control_dim = control_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.use_residual = use_residual
         
         # Build FiLM blocks
         self.film_blocks = nn.ModuleList()
         
         # First block: spatial_dim -> hidden_dim
         self.film_blocks.append(
-            FiLMBlock(spatial_dim, hidden_dim, control_dim, film_hidden)
+            FiLMBlock(spatial_dim, hidden_dim, control_dim, film_hidden, use_layer_norm=use_layer_norm)
         )
         
         # Middle blocks: hidden_dim -> hidden_dim
         for _ in range(num_layers - 1):
             self.film_blocks.append(
-                FiLMBlock(hidden_dim, hidden_dim, control_dim, film_hidden)
+                FiLMBlock(hidden_dim, hidden_dim, control_dim, film_hidden, use_layer_norm=use_layer_norm)
             )
         
-        # Residual projection: spatial_dim -> hidden_dim
-        if use_residual:
-            self.residual_proj = nn.Linear(spatial_dim, hidden_dim)
-        else:
-            self.residual_proj = None
-        
-        print(f"[MultiHeadFiLMDecoder] Created with {num_layers} FiLM blocks")
-        print(f"[MultiHeadFiLMDecoder]   - Spatial dim: {spatial_dim}")
-        print(f"[MultiHeadFiLMDecoder]   - Control dim: {control_dim}")
-        print(f"[MultiHeadFiLMDecoder]   - Hidden dim: {hidden_dim}")
-        print(f"[MultiHeadFiLMDecoder]   - Residual: {use_residual}")
+        print(f"[MultiHeadFiLMDecoder] Created with {num_layers} FiLM blocks (each with internal residual)")
+        print(f"[MultiHeadFiLMDecoder]   Spatial: {spatial_dim} → Control: {control_dim} → Hidden: {hidden_dim}")
+        print(f"[MultiHeadFiLMDecoder]   FiLM hidden dim: {film_hidden}")
     
     def forward(
         self, 
         spatial_feat: torch.Tensor, 
         control_feat: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Forward pass with multi-head FiLM modulation.
         
-        Args:
-            spatial_feat: [N, spatial_dim] - Spatial features from TriPlane
-            control_feat: [N, control_dim] - Control features (after PE)
-            
-        Returns:
-            output: [N, hidden_dim] - Fused features
-        """
         # Pass through FiLM blocks
         h = spatial_feat
         for film_block in self.film_blocks:
             h = film_block(h, control_feat)
-        
-        # Add residual connection
-        if self.use_residual and self.residual_proj is not None:
-            residual = self.residual_proj(spatial_feat)
-            h = h + residual
         
         return h
 
@@ -228,23 +150,6 @@ class MultiHeadFiLMDecoder(nn.Module):
 # ============================================================================
 
 class DeformationTriPlane(nn.Module):
-    """
-    Deformation network using TriPlane for spatial encoding and Multi-head FiLM fusion.
-    
-    Architecture:
-        1. TriPlane: Extract spatial features from (x, y, z)
-        2. ControlProcessor: Process control vector with optional PE
-        3. Multi-head FiLM: Control modulates spatial features through γ and β
-        4. Residual Connection: Preserve original spatial information
-        5. Deformation Heads: Predict per-attribute deformations
-        
-    Args:
-        D: Number of FiLM blocks (decoder depth)
-        W: Hidden dimension (decoder width)
-        grid_pe: Positional encoding for grid features
-        args: Configuration arguments
-    """
-    
     def __init__(self, D=2, W=128, grid_pe=0, args=None):
         super(DeformationTriPlane, self).__init__()
         
@@ -290,7 +195,6 @@ class DeformationTriPlane(nn.Module):
         
         # 4. FiLM fusion configuration
         film_hidden = getattr(args, 'film_hidden_dim', 64)
-        use_residual = getattr(args, 'film_use_residual', True)
         
         # 5. Multi-head FiLM decoder
         self.film_decoder = MultiHeadFiLMDecoder(
@@ -298,8 +202,7 @@ class DeformationTriPlane(nn.Module):
             control_dim=self.control_dim,
             hidden_dim=W,
             num_layers=D,
-            film_hidden=film_hidden,
-            use_residual=use_residual
+            film_hidden=film_hidden
         )
         
         # 6. Optional modules
@@ -574,15 +477,6 @@ class DeformationTriPlane(nn.Module):
 # ============================================================================
 
 class deform_network_triplane(nn.Module):
-    """
-    Top-level deformation network using TriPlane + Multi-head FiLM architecture.
-    
-    This is a drop-in replacement for deform_network that uses:
-    1. TriPlaneField (3 planes) instead of HexPlaneField (6 planes)
-    2. Multi-head FiLM fusion instead of simple concatenation
-    3. Full control vector preservation (no compression to 1D)
-    """
-    
     def __init__(self, args):
         super(deform_network_triplane, self).__init__()
         
@@ -706,172 +600,3 @@ def poc_fre(input_data: torch.Tensor, poc_buf: torch.Tensor) -> torch.Tensor:
     input_data_cos = input_data_emb.cos()
     input_data_emb = torch.cat([input_data, input_data_sin, input_data_cos], -1)
     return input_data_emb
-
-
-# ============================================================================
-# Testing
-# ============================================================================
-
-def test_film_layer():
-    """Test FiLM layer."""
-    print("=" * 70)
-    print("Testing FiLM Layer")
-    print("=" * 70)
-    
-    film = FiLMLayer(feature_dim=64, condition_dim=32, hidden_dim=32)
-    
-    features = torch.randn(100, 64)
-    condition = torch.randn(100, 32)
-    
-    output = film(features, condition)
-    print(f"Input: {features.shape}, Condition: {condition.shape}")
-    print(f"Output: {output.shape}")
-    
-    # Check identity initialization
-    zero_condition = torch.zeros(100, 32)
-    output_identity = film(features, zero_condition)
-    diff = (output_identity - features).abs().mean()
-    print(f"Identity test (should be ~1.0): diff={diff:.6f}")
-    
-    print("✓ FiLM Layer test passed!")
-
-
-def test_film_block():
-    """Test FiLM block."""
-    print("\n" + "=" * 70)
-    print("Testing FiLM Block")
-    print("=" * 70)
-    
-    block = FiLMBlock(in_dim=64, out_dim=128, condition_dim=32, hidden_dim=32)
-    
-    x = torch.randn(100, 64)
-    condition = torch.randn(100, 32)
-    
-    output = block(x, condition)
-    print(f"Input: {x.shape}, Condition: {condition.shape}")
-    print(f"Output: {output.shape}")
-    
-    print("✓ FiLM Block test passed!")
-
-
-def test_multihead_film_decoder():
-    """Test Multi-head FiLM Decoder."""
-    print("\n" + "=" * 70)
-    print("Testing Multi-head FiLM Decoder")
-    print("=" * 70)
-    
-    decoder = MultiHeadFiLMDecoder(
-        spatial_dim=96,
-        control_dim=54,
-        hidden_dim=128,
-        num_layers=3,
-        film_hidden=64,
-        use_residual=True
-    )
-    
-    spatial_feat = torch.randn(1000, 96)
-    control_feat = torch.randn(1000, 54)
-    
-    output = decoder(spatial_feat, control_feat)
-    print(f"Spatial: {spatial_feat.shape}, Control: {control_feat.shape}")
-    print(f"Output: {output.shape}")
-    
-    # Count parameters
-    num_params = sum(p.numel() for p in decoder.parameters())
-    print(f"Parameters: {num_params:,}")
-    
-    print("✓ Multi-head FiLM Decoder test passed!")
-
-
-def test_deform_network_triplane():
-    """Test the complete TriPlane + FiLM deformation network."""
-    print("\n" + "=" * 70)
-    print("Testing deform_network_triplane with FiLM")
-    print("=" * 70)
-    
-    # Create mock args
-    class Args:
-        net_width = 128
-        defor_depth = 2
-        posebase_pe = 10
-        scale_rotation_pe = 2
-        opacity_pe = 2
-        grid_pe = 0
-        bounds = 1.6
-        multires = [1, 2, 4]
-        kplanes_config = {
-            'resolution': [64, 64, 64],
-            'output_coordinate_dim': 32
-        }
-        control_input_dim = 6
-        control_use_pe = True
-        control_num_frequencies = 4
-        control_hidden_dim = 64
-        control_output_dim = None
-        film_hidden_dim = 64
-        film_use_residual = True
-        no_grid = False
-        no_dx = False
-        no_ds = False
-        no_dr = False
-        no_do = True
-        no_dshs = True
-        empty_voxel = False
-        static_mlp = False
-        apply_rotation = False
-    
-    args = Args()
-    
-    # Create network
-    network = deform_network_triplane(args)
-    
-    # Count parameters
-    total_params = sum(p.numel() for p in network.parameters())
-    mlp_params = sum(p.numel() for p in network.get_mlp_parameters())
-    grid_params = sum(p.numel() for p in network.get_grid_parameters())
-    
-    print(f"\nNetwork Statistics:")
-    print(f"  Total parameters: {total_params:,}")
-    print(f"  MLP parameters: {mlp_params:,}")
-    print(f"  Grid parameters: {grid_params:,}")
-    
-    # Test forward pass
-    batch_size = 1000
-    point = torch.randn(batch_size, 3) * 1.0
-    scales = torch.randn(batch_size, 3) * 0.1
-    rotations = torch.randn(batch_size, 4)
-    rotations = rotations / rotations.norm(dim=-1, keepdim=True)
-    opacity = torch.randn(batch_size, 1)
-    shs = torch.randn(batch_size, 16, 3)
-    control_vec = torch.randn(batch_size, 6) * 3.14
-    
-    print(f"\nInput shapes:")
-    print(f"  point: {point.shape}")
-    print(f"  control_vec: {control_vec.shape}")
-    
-    # Forward pass
-    means3D, scales_out, rotations_out, opacity_out, shs_out = network(
-        point, scales, rotations, opacity, shs, control_vec
-    )
-    
-    print(f"\nOutput shapes:")
-    print(f"  means3D: {means3D.shape}")
-    print(f"  scales: {scales_out.shape}")
-    print(f"  rotations: {rotations_out.shape}")
-    
-    # Test gradient flow
-    loss = means3D.sum() + scales_out.sum() + rotations_out.sum()
-    loss.backward()
-    
-    print(f"\nGradient check: ✓ Passed")
-    
-    print("\n" + "=" * 70)
-    print("✓ All tests passed!")
-    print("=" * 70)
-
-
-if __name__ == "__main__":
-    test_film_layer()
-    test_film_block()
-    test_multihead_film_decoder()
-    test_deform_network_triplane()
