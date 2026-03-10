@@ -1,0 +1,172 @@
+======================================================================
+Point Tracking MPC Test (TAPIR)
+======================================================================
+Model: outputs/dm_control_push_test_flow2
+Initial: assets/start-end/cam5_sample1_frame_00001.jpg
+Target: assets/start-end/cam5_sample1_frame_00018.jpg
+Output: outputs/test_per_step_resample_quick
+Action Limit: ±0.8
+======================================================================
+
+[1/7] Initializing PointTracker (TAPIR)...
+[PointTracker] Initializing TAPIR with input_resolution=(512, 512)
+
+[2/7] Loading images...
+
+[3/7] Setting up tracking points...
+  Using sampling method: motion_mask
+[MotionMask] WARNING: Low coverage 1.4%, fallback to 95th percentile
+[MotionMask] Coverage: 5.0%, Threshold: 0.58px, Flow range: [0.00, 87.66]px
+[MotionSampling] WARNING: Only 179 points after NMS, padding with grid to reach 384
+[MotionSampling] Saved diagnostic to outputs/test_per_step_resample_quick/motion_mask_with_points.png
+[MotionSampling] Points in motion regions: 27.3%
+[MotionSampling] Sampled 384 points (motion=268, corners=116, final after NMS=384)
+  Sampled 384 tracking points (Motion-driven (70% motion regions + 30% corners))
+  Point coordinate range: x=[11.0, 494.0], y=[14.0, 510.0]
+  Image shape: (512, 512, 3)
+  Saved: 01_initial_with_points.png
+  Computing target points by tracking Initial -> Target...
+  Target point coordinate range: x=[12.5, 509.2], y=[11.2, 494.2]
+  Saved: 01_target_with_points.png
+  Visible target points: 348.0/384
+
+[4/7] Loading camera transforms and initial control...
+  Camera loaded: fx=579.4112549695428, fy=579.4112549695428, cx=240.0, cy=240.0
+  Initial control loaded from JSON: shape=(15,)
+
+[5/7] Initializing FlowGuidedGaussianDynamicsModel...
+Loading 4DGS model from outputs/dm_control_push_test_flow2
+[Factory] Creating TriPlane-based deformation network
+[Factory]   - Spatial encoding: 3 planes (XY, XZ, YZ)
+[Factory]   - Control injection: Direct to decoder
+[TriPlaneField] Initialized with 3 scales
+[TriPlaneField] Feature dimension: 96
+[TriPlaneField] Resolutions: [128, 128, 128, 256, 256, 256, 512, 512, 512]
+[ControlProcessor] Input: 15 → PE: 15 → MLP → Output: 32
+[MultiHeadFiLMDecoder] Created with 3 FiLM blocks (each with internal residual)
+[MultiHeadFiLMDecoder]   Spatial: 96 → Control: 32 → Hidden: 128
+[MultiHeadFiLMDecoder]   FiLM hidden dim: 128
+[DeformationTriPlane] Using Multi-head FiLM fusion
+[DeformationTriPlane]   - Spatial dim: 96
+[DeformationTriPlane]   - Control dim: 32
+[DeformationTriPlane]   - FiLM layers: 3
+[DeformationTriPlane]   - Hidden dim: 128
+[deform_network_triplane] Initialized with TriPlane + Multi-head FiLM Fusion
+Traceback (most recent call last):
+  File "test_cotracker_mpc.py", line 679, in <module>
+    main()
+  File "test_cotracker_mpc.py", line 370, in main
+    cy=cy
+  File "./mpc/flow_guided_gaussian_model.py", line 63, in __init__
+    cy=cy,
+  File "./mpc/gaussian_dynamics_model.py", line 113, in __init__
+    self._load_checkpoint(model_path, iteration)
+  File "./mpc/gaussian_dynamics_model.py", line 227, in _load_checkpoint
+    self.gaussians.load_ply(ply_path)
+  File "./scene/gaussian_model.py", line 275, in load_ply
+    plydata = PlyData.read(path)
+  File "/home/ubuntu/miniconda3/envs/Gaussians4D/lib/python3.7/site-packages/plyfile.py", line 498, in read
+    (must_close, stream) = _open_stream(stream, 'read')
+  File "/home/ubuntu/miniconda3/envs/Gaussians4D/lib/python3.7/site-packages/plyfile.py", line 657, in _open_stream
+    return (True, open(stream, read_or_write[0] + 'b'))
+FileNotFoundError: [Errno 2] No such file or directory: 'outputs/dm_control_push_test_flow2/point_cloud.ply'
+
+[4/7] Loading camera transforms and initial control...
+  Camera loaded: fx=579.4112549695428, fy=579.4112549695428, cx=240.0, cy=240.0
+  Initial control loaded from JSON: shape=(15,)
+
+[5/7] Initializing FlowGuidedGaussianDynamicsModel...
+Loading 4DGS model from outputs/dm_control_push_test_flow2
+[Factory] Creating TriPlane-based deformation network
+[Factory]   - Spatial encoding: 3 planes (XY, XZ, YZ)
+[Factory]   - Control injection: Direct to decoder
+[TriPlaneField] Initialized with 3 scales
+[TriPlaneField] Feature dimension: 96
+[TriPlaneField] Resolutions: [128, 128, 128, 256, 256, 256, 512, 512, 512]
+[ControlProcessor] Input: 15 → PE: 15 → MLP → Output: 32
+[MultiHeadFiLMDecoder] Created with 3 FiLM blocks (each with internal residual)
+[MultiHeadFiLMDecoder]   Spatial: 96 → Control: 32 → Hidden: 128
+[MultiHeadFiLMDecoder]   FiLM hidden dim: 128
+[DeformationTriPlane] Using Multi-head FiLM fusion
+[DeformationTriPlane]   - Spatial dim: 96
+[DeformationTriPlane]   - Control dim: 32
+[DeformationTriPlane]   - FiLM layers: 3
+[DeformationTriPlane]   - Hidden dim: 128
+[deform_network_triplane] Initialized with TriPlane + Multi-head FiLM Fusion
+  ✓ Loaded deformation network from outputs/dm_control_push_test_flow2/deformation.pth
+✓ Model loaded successfully!
+  - Control dim: 15
+  - Image size: 512x512
+  Model loaded successfully
+
+[6/7] Setting up MPC Optimizer...
+
+[7/7] Starting MPC Loop...
+  Planning for 2 steps with horizon=3
+
+--- Step 1/2 ---
+  🔄 Re-computing motion mask: current frame → target frame
+[MotionMask] WARNING: Low coverage 1.4%, fallback to 95th percentile
+[MotionMask] Coverage: 5.0%, Threshold: 0.58px, Flow range: [0.00, 87.66]px
+[MotionSampling] WARNING: Only 181 points after NMS, padding with grid to reach 384
+[MotionSampling] Saved diagnostic to outputs/test_per_step_resample_quick/step_001/motion_mask_with_points.png
+[MotionSampling] Points in motion regions: 27.3%
+[MotionSampling] Sampled 384 points (motion=268, corners=116, final after NMS=384)
+    ✓ Sampled 384 points on moving objects (0.84s)
+  📍 Computing target point positions via TAPIR...
+    ✓ Target points computed, diagnostics saved to outputs/test_per_step_resample_quick/step_001/
+  Using initial action (no planning at step 1)
+  Action (first 5 dims): [0.0000, 0.0000, 0.0000, 0.0000, 0.0000...]
+  Action magnitude: 0.0000
+  Tracking status: OK (0.0/384 visible = 0.0%)
+  Avg Distance to Target: 154.8412 pixels
+
+--- Step 2/2 ---
+  🔄 Re-computing motion mask: current frame → target frame
+[MotionMask] Coverage: 30.3%, Threshold: 8.00px, Flow range: [1.09, 47.01]px
+[MotionSampling] WARNING: Only 289 points after NMS, padding with grid to reach 384
+[MotionSampling] Saved diagnostic to outputs/test_per_step_resample_quick/step_002/motion_mask_with_points.png
+[MotionSampling] Points in motion regions: 71.1%
+[MotionSampling] Sampled 384 points (motion=268, corners=116, final after NMS=384)
+    ✓ Sampled 384 points on moving objects (1.10s)
+  📍 Computing target point positions via TAPIR...
+    ✓ Target points computed, diagnostics saved to outputs/test_per_step_resample_quick/step_002/
+    Iter 1/2: Best = -39.365804, Mean = -41.644692, Std = 2.385665
+    📊 Loss Breakdown (Iter 2):
+      - point_tracking           : mean=-37.5701, std=  0.5407, max=-36.6287, min=-38.3869
+      - TOTAL                    : mean=-40.5947, std=  0.5407, max=-39.6533, min=-41.4115
+    Iter 2/2: Best = -39.653313, Mean = -40.594707, Std = 0.540672
+  Best Reward: -39.6533
+  Mean Reward: -40.5947
+  Action (first 5 dims): [-0.3394, -0.3584, 0.3088, 0.2131, -0.3960...]
+  Action magnitude: 1.5838
+  Tracking status: OK (0.0/384 visible = 0.0%)
+  Avg Distance to Target: 196.7937 pixels
+
+======================================================================
+Final Analysis
+======================================================================
+
+Image Quality Metrics:
+  MSE (Final vs Target):  0.021066
+  PSNR (Final vs Target): 16.76 dB
+
+Point Tracking Metrics:
+  Mean distance to target: 196.7937 pixels
+  Max distance to target:  593.5521 pixels
+  Min distance to target:  4.7821 pixels
+
+Target Reached: NO ✗ (threshold: 10.0 pixels)
+
+======================================================================
+Saving Results
+======================================================================
+✓ Action sequence saved: outputs/test_per_step_resample_quick/action_sequence.npy
+  Shape: (3, 15)
+✓ Metrics saved: outputs/test_per_step_resample_quick/metrics.json
+✓ Loss history saved: outputs/test_per_step_resample_quick/loss_history.csv
+
+======================================================================
+Test Complete!
+All outputs saved to: outputs/test_per_step_resample_quick
+======================================================================
