@@ -160,31 +160,43 @@ class DeformationTriPlane(nn.Module):
         self.no_grid = getattr(args, 'no_grid', False)
         
         # TriPlane configuration
+        # 处理kplanes_config可能是dict或对象的情况
+        kplanes_cfg = getattr(args, 'kplanes_config', {})
+        if isinstance(kplanes_cfg, dict):
+            resolution = kplanes_cfg.get('resolution', [64, 64, 64])[:3]
+            output_dim = kplanes_cfg.get('output_coordinate_dim', 32)
+        else:
+            # 如果是对象，使用getattr
+            resolution = getattr(kplanes_cfg, 'resolution', [64, 64, 64])[:3]
+            output_dim = getattr(kplanes_cfg, 'output_coordinate_dim', 32)
+        
         triplane_config = {
-            'resolution': args.kplanes_config.get('resolution', [64, 64, 64])[:3],
-            'output_coordinate_dim': args.kplanes_config.get('output_coordinate_dim', 32)
+            'resolution': resolution,
+            'output_coordinate_dim': output_dim
         }
         
         # 1. TriPlane for spatial feature encoding
         self.triplane = TriPlaneField(
-            bounds=args.bounds,
+            bounds=getattr(args, 'bounds', 1.6),
             planeconfig=triplane_config,
-            multires=args.multires
+            multires=getattr(args, 'multires', [1, 2, 4])
         )
         
         # 2. Control signal processor
+        # 默认值与ControlProcessor保持一致
         control_use_pe = getattr(args, 'control_use_pe', True)
         control_num_freq = getattr(args, 'control_num_frequencies', 4)
         control_input_dim = getattr(args, 'control_input_dim', 6)
-        control_hidden = getattr(args, 'control_hidden_dim', 64)
-        control_output_dim = getattr(args, 'control_output_dim', None)
+        control_hidden = getattr(args, 'control_hidden_dim', 128)  # 与ControlProcessor默认值一致
+        # TriPlane+FiLM必须指定output_dim，提供合理默认值
+        control_output_dim = getattr(args, 'control_output_dim', 64)
         
         self.control_processor = ControlProcessor(
             input_dim=control_input_dim,
             use_pe=control_use_pe,
             num_frequencies=control_num_freq,
-            hidden_dim=control_hidden if control_output_dim else None,
-            output_dim=control_output_dim
+            hidden_dim=control_hidden,  # 总是使用hidden_dim
+            output_dim=control_output_dim  # 保证非None
         )
         
         # 3. Compute dimensions

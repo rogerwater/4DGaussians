@@ -1,0 +1,80 @@
+"""
+Configuration for 4DGS MPC Control Experiment
+
+This config defines the setup for using CEM to optimize robot control
+to achieve visual goals using 4D Gaussian Splatting dynamics model.
+"""
+
+# Model Configuration
+model:
+  _target_: mpc.gaussian_dynamics_model.GaussianDynamicsModel
+  model_path: /home/ubuntu/yyf/4DGaussians/assets  # Path to your trained 4DGS model
+  iteration: 5000  # Checkpoint iteration to load
+  control_dim: 15  # 12 joint sin/cos + 3 gripper values
+  image_height: 128
+  image_width: 128
+  device: cuda
+
+# Agent Configuration
+agent:
+  _target_: mpc.agent.PlanningAgent
+  a_dim: 15  # Action dimension: 12 joint sin/cos + 3 gripper
+  replan_interval: 1  # Replan every step for reactive control
+  initial_action: [0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.5, 0.5, 0.5]  # All joints at 0°, gripper middle
+  
+  # Optimizer Configuration
+  optimizer:
+    _target_: mpc.cem.CEMOptimizer  # Or cem_gd.CEMGDOptimizer for gradient-enhanced CEM
+    
+    # Sampler
+    sampler:
+      _target_: mpc.sampler.CorrelatedNoiseSampler
+      a_dim: 15
+      horizon: 10
+      beta: 0.9  # Temporal correlation coefficient
+    
+    # Objective Function
+    objective:
+      _target_: mpc.objectives.SquaredError  # MSE between predicted and goal images
+      key: rgb
+      weight: 1.0
+    
+    # CEM Parameters
+    a_dim: 15
+    horizon: 10        # Planning horizon (number of future steps)
+    num_samples: 64    # Number of action sequences to sample per iteration
+    elites_frac: 0.1   # Top 10% used to update distribution
+    opt_iters: 5       # Number of CEM iterations
+    init_std: 0.3      # Initial standard deviation for sampling
+    init_mean: null    # Initial mean (will use previous plan)
+    alpha: 0.1         # Smoothing factor for distribution update
+    verbose: true
+    round_gripper_action: true  # Round gripper to -1 or 1
+    log_every: 1       # Log visualizations every N steps
+
+# Environment Configuration (Placeholder - adapt to your robot interface)
+env:
+  _target_: mpc.dummy_env.DummyRobotEnv  # Replace with your actual robot env
+  action_dimension: 15
+  observation_shape: [128, 128, 3]
+  control_freq: 10  # Hz
+  
+# Experiment Configuration
+seed: 42
+num_trajectories: 10      # Number of test trajectories to run
+max_traj_length: 20       # Maximum steps per trajectory
+n_context: 2              # Number of context frames for model
+planning_horizon: 10      # Planning horizon
+planning_modalities:
+  - rgb
+
+# Camera Configuration
+camera_height: 128
+camera_width: 128
+camera_names:
+  - front_camera
+
+# Logging
+resume: false
+run_name: 4dgs_cem_control
+log_dir: ./outputs/4dgs_control

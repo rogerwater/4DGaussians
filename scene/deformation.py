@@ -240,7 +240,7 @@ class deform_network(nn.Module):
         Args:
             point: [N, 3]
             scales, rotations, opacity, shs: Gaussian attributes
-            control_vec: [N, control_dim] - Control vector (6D by default)
+            control_vec: [N, control_dim] - Control vector (15D by default)
             
         Returns:
             means3D, scales, rotations, opacity, shs
