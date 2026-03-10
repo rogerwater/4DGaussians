@@ -18,6 +18,7 @@ from pathlib import Path
 from PIL import Image
 import cv2
 import json
+import time
 
 # Parse device early
 def parse_device_early():
@@ -455,6 +456,46 @@ def main():
     for step in range(1, args.num_steps + 1):
         print(f"\n--- Step {step}/{args.num_steps} ---")
         
+        # 🆕 Per-step motion mask resampling (Solution A)
+        if args.resample_motion_mask_per_step and args.sampling_method == "motion_mask":
+            step_dir = os.path.join(args.output_dir, f"step_{step:03d}")
+            os.makedirs(step_dir, exist_ok=True)
+            
+            print(f"  🔄 Re-computing motion mask: current frame → target frame")
+            start_time = time.time()
+            
+            current_tracked_points = point_sampling.sample_motion_driven_points(
+                current_image,      # Current frame (not initial!)
+                target_image,       # Target frame (fixed)
+                num_points=args.num_tracking_points,
+                device=args.device,
+                motion_ratio=0.7,
+                save_diagnostics=True,
+                output_dir=step_dir
+            )
+            
+            gmflow_time = time.time() - start_time
+            print(f"    ✓ Sampled {len(current_tracked_points)} points on moving objects ({gmflow_time:.2f}s)")
+            
+            # Compute target points via TAPIR (current → target)
+            print(f"  📍 Computing target point positions via TAPIR...")
+            video_tensor_to_target = torch.stack([
+                torch.from_numpy(current_image).permute(2, 0, 1).float(),
+                torch.from_numpy(target_image).permute(2, 0, 1).float()
+            ], dim=0).unsqueeze(0).to(args.device)
+            
+            tracks_to_target, visibles_to_target = tracker.track(
+                video_tensor_to_target,
+                current_tracked_points
+            )
+            target_points = tracks_to_target[0, :, 1, :].cpu().numpy()
+            
+            # Visualize resampled points on current frame
+            vis_current_points = visualize_points(current_image, current_tracked_points, color=(255, 255, 0), radius=2)
+            Image.fromarray((vis_current_points).astype(np.uint8)).save(
+                os.path.join(step_dir, f"current_with_resampled_points.png"))
+            print(f"    ✓ Target points computed, diagnostics saved to {step_dir}/")
+        
         # Set goal (pass as plain dict, not ObservationList)
         agent.set_goal({
             'target_points': target_points,  # (N, 2)
@@ -513,7 +554,19 @@ def main():
             print(f"  ⚠️ Tracking failure detected: {failure_reason}")
             print(f"     Re-sampling points using {args.sampling_method} method...")
             
-            if args.sampling_method == "sobel_hybrid":
+            if args.sampling_method == "motion_mask":
+                # 🆕 NEW: Motion mask re-sampling on failure
+                new_points = point_sampling.sample_motion_driven_points(
+                    next_image_np,
+                    target_image,  # Use original target from initialization
+                    num_points=args.num_tracking_points,
+                    device=args.device,
+                    motion_ratio=0.7,
+                    save_diagnostics=False,  # Don't save diagnostics on failure (save time)
+                    output_dir=args.output_dir
+                )
+                print(f"     Re-sampled {len(new_points)} points using motion mask")
+            elif args.sampling_method == "sobel_hybrid":
                 new_points = sample_object_focused_points(next_image_np, num_points=args.num_tracking_points, object_ratio=0.7)
             elif args.sampling_method == "shi_tomasi":
                 new_points = point_sampling.sample_shi_tomasi_points(next_image_np, num_points=args.num_tracking_points)
