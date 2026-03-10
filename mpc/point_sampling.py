@@ -12,6 +12,11 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+import os
+
+# Motion mask computation (Task 1)
+from gmflow.config import get_cfg as get_gmflow_cfg
+from gmflow.gmflow import GMFlow
 
 
 def sample_shi_tomasi_points(image, num_points=256, quality_level=0.01, min_distance=8):
@@ -288,3 +293,269 @@ def compute_point_quality_scores(image, points):
         scores.append(texture_score)
     
     return np.array(scores)
+
+
+def compute_motion_mask(img1, img2, device='cuda:0', percentile=70, min_magnitude=1.0,
+                        save_diagnostics=False, output_dir='outputs/test_motion'):
+    """
+    Compute motion mask between two frames using GMFlow optical flow.
+    
+    Uses adaptive percentile-based thresholding to identify moving regions,
+    with morphological post-processing for clean boundaries.
+    
+    Args:
+        img1: (H, W, 3) RGB image [0, 1] float (initial frame)
+        img2: (H, W, 3) RGB image [0, 1] float (target frame)
+        device: CUDA device string (e.g., 'cuda:0')
+        percentile: Percentile threshold for motion detection (70 = top 30% of motion)
+        min_magnitude: Minimum flow magnitude in pixels (noise filter, default 1.0px)
+        save_diagnostics: Whether to save flow magnitude visualization
+        output_dir: Directory for diagnostic outputs
+    
+    Returns:
+        motion_mask: (H, W) boolean array, True = motion detected
+        flow_magnitude: (H, W) float array, flow magnitude in pixels
+    
+    References:
+        - GMFlow initialization: demo_flow_guided_mpc.py:271-288
+        - Adaptive threshold: UnFlow (ICCV 2017), demo_flow_guided_mpc.py:312
+        - Morphological ops: test_cotracker_mpc.py:78-80
+    """
+    H, W = img1.shape[:2]
+    device_obj = torch.device(device)
+    
+    # ============ GMFlow Initialization ============
+    gmflow_cfg = get_gmflow_cfg()
+    flownet = GMFlow(
+        feature_channels=gmflow_cfg.feature_channels,
+        num_scales=gmflow_cfg.num_scales,
+        upsample_factor=gmflow_cfg.upsample_factor,
+        num_head=gmflow_cfg.num_head,
+        attention_type=gmflow_cfg.attention_type,
+        ffn_dim_expansion=gmflow_cfg.ffn_dim_expansion,
+        num_transformer_layers=gmflow_cfg.num_transformer_layers,
+    ).to(device_obj)
+    
+    # Safe checkpoint loading (CPU → GPU)
+    checkpoint = torch.load(gmflow_cfg.model, map_location="cpu")
+    weights = checkpoint["model"] if "model" in checkpoint else checkpoint
+    flownet.load_state_dict(weights, strict=True)
+    flownet.eval()
+    
+    # ============ Flow Computation ============
+    # Prepare images: (H, W, 3) float → (1, 3, H, W) tensor
+    img1_t = torch.from_numpy(img1).permute(2, 0, 1).unsqueeze(0).float().to(device_obj)
+    img2_t = torch.from_numpy(img2).permute(2, 0, 1).unsqueeze(0).float().to(device_obj)
+    
+    with torch.no_grad():
+        flow_predictions = flownet(
+            img1_t, img2_t,
+            attn_splits_list=[2],
+            corr_radius_list=[-1],
+            prop_radius_list=[-1],
+        )
+        flow_field = flow_predictions[-1]  # (1, 2, H, W)
+    
+    flow_field = flow_field[0].permute(1, 2, 0).cpu().numpy()  # (H, W, 2)
+    flow_magnitude = np.linalg.norm(flow_field, axis=-1)  # (H, W)
+    
+    # ============ Adaptive Percentile Thresholding ============
+    # Step 1: Filter noise
+    above_min = flow_magnitude > min_magnitude
+    if above_min.sum() == 0:
+        print(f"[MotionMask] WARNING: No motion above {min_magnitude}px, using all pixels")
+        above_min = np.ones_like(flow_magnitude, dtype=bool)
+    
+    threshold = np.percentile(flow_magnitude[above_min], percentile)
+    
+    # Step 2: Create mask
+    motion_mask = flow_magnitude > threshold
+    coverage = motion_mask.sum() / motion_mask.size
+    
+    # Step 3: Guardrails (handle edge cases)
+    if coverage < 0.05:
+        print(f"[MotionMask] WARNING: Low coverage {coverage:.1%}, fallback to 95th percentile")
+        threshold = np.percentile(flow_magnitude.flatten(), 95)
+        motion_mask = flow_magnitude > threshold
+        coverage = motion_mask.sum() / motion_mask.size
+    elif coverage > 0.95:
+        print(f"[MotionMask] WARNING: High coverage {coverage:.1%} (camera motion?), fallback to 90th percentile")
+        threshold = np.percentile(flow_magnitude.flatten(), 90)
+        motion_mask = flow_magnitude > threshold
+        coverage = motion_mask.sum() / motion_mask.size
+    
+    # ============ Morphological Post-Processing ============
+    kernel = np.ones((5, 5), np.uint8)
+    mask_uint8 = motion_mask.astype(np.uint8)
+    mask_uint8 = cv2.morphologyEx(mask_uint8, cv2.MORPH_CLOSE, kernel)  # Fill holes
+    mask_uint8 = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel)   # Remove noise
+    motion_mask = mask_uint8.astype(bool)
+    
+    # Update coverage after morphological ops
+    coverage = motion_mask.sum() / motion_mask.size
+    
+    # ============ Validation ============
+    assert 0.01 < coverage < 0.8, \
+        f"Motion mask coverage {coverage:.1%} out of valid range [1%, 80%]. " \
+        f"Too low = static scene, too high = camera motion."
+    
+    print(f"[MotionMask] Coverage: {coverage:.1%}, Threshold: {threshold:.2f}px, " \
+          f"Flow range: [{flow_magnitude.min():.2f}, {flow_magnitude.max():.2f}]px")
+    
+    # ============ Diagnostic Visualization ============
+    if save_diagnostics:
+        try:
+            import matplotlib.pyplot as plt
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Flow magnitude heatmap
+            plt.figure(figsize=(10, 8))
+            plt.imshow(flow_magnitude, cmap='jet')
+            plt.colorbar(label='Flow Magnitude (pixels)')
+            plt.title(f'Optical Flow Magnitude\n(threshold={threshold:.2f}px, coverage={coverage:.1%})')
+            plt.tight_layout()
+            plt.savefig(f'{output_dir}/flow_magnitude_heatmap.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            print(f"[MotionMask] Saved diagnostic to {output_dir}/flow_magnitude_heatmap.png")
+        except ImportError:
+            print("[MotionMask] WARNING: matplotlib not available, skipping diagnostics")
+    
+    # ============ GPU Memory Cleanup ============
+    del flownet
+    torch.cuda.empty_cache()
+    
+    return motion_mask, flow_magnitude
+
+
+def sample_motion_driven_points(img1, img2, num_points=384, device='cuda:0',
+                                 motion_ratio=0.7, nms_radius=8,
+                                 save_diagnostics=False, output_dir='outputs/test_motion'):
+    """
+    Sample tracking points focused on motion regions using GMFlow.
+    
+    Combines motion-based sampling (70%) with corner detection (30%) for robust tracking.
+    Includes fallback strategies for edge cases (static scenes, camera motion).
+    
+    Args:
+        img1: (H, W, 3) RGB image [0, 1] float (initial frame)
+        img2: (H, W, 3) RGB image [0, 1] float (target frame)
+        num_points: Target number of tracking points
+        device: CUDA device string
+        motion_ratio: Fraction of points from motion regions (default 0.7 = 70%)
+        nms_radius: Minimum distance between points (pixels)
+        save_diagnostics: Whether to save visualization
+        output_dir: Directory for diagnostic outputs
+    
+    Returns:
+        points: (N, 2) numpy array of [x, y] coordinates
+    
+    References:
+        - Motion mask: compute_motion_mask() (Task 1)
+        - Hybrid sampling: sample_combined() (lines 138-172)
+        - Mask-constrained sampling: test_cotracker_mpc.py:84-129
+    """
+    H, W = img1.shape[:2]
+    
+    # ============ Compute Motion Mask ============
+    motion_mask, flow_magnitude = compute_motion_mask(img1, img2, device=device,
+                                                       save_diagnostics=False,
+                                                       output_dir=output_dir)
+    
+    coverage = motion_mask.sum() / motion_mask.size
+    
+    # ============ Fallback Strategies ============
+    # Case 1: Nearly static scene (coverage < 1%)
+    if coverage < 0.01:
+        print(f"[MotionSampling] WARNING: Static scene (coverage {coverage:.1%}), fallback to uniform grid")
+        return sample_uniform_grid(img1, num_points, border=0.05)
+    
+    # Case 2: Camera motion (coverage > 80%)
+    if coverage > 0.80:
+        print(f"[MotionSampling] WARNING: High motion (coverage {coverage:.1%}), fallback to Shi-Tomasi")
+        return sample_shi_tomasi_points(img1, num_points, quality_level=0.01, min_distance=nms_radius)
+    
+    # ============ Motion-Driven Hybrid Sampling ============
+    num_motion_points = int(num_points * motion_ratio)
+    num_corner_points = num_points - num_motion_points
+    
+    # Part 1: Sample from motion regions
+    motion_coords = np.argwhere(motion_mask)  # (N, 2) [y, x]
+    
+    if len(motion_coords) > 0:
+        # Weight sampling by flow magnitude for better feature selection
+        motion_y, motion_x = motion_coords[:, 0], motion_coords[:, 1]
+        weights = flow_magnitude[motion_y, motion_x]
+        weights = weights / weights.sum()  # Normalize
+        
+        # Sample indices with replacement if needed
+        num_to_sample = min(num_motion_points, len(motion_coords))
+        indices = np.random.choice(len(motion_coords), size=num_to_sample, 
+                                   replace=False, p=weights)
+        motion_points = motion_coords[indices][:, [1, 0]]  # Convert to [x, y]
+    else:
+        motion_points = np.empty((0, 2))
+    
+    # Part 2: Sample Shi-Tomasi corners for texture quality
+    corner_points = sample_shi_tomasi_points(img1, num_corner_points, 
+                                             quality_level=0.01,
+                                             min_distance=nms_radius)
+    
+    # ============ Combine and Filter ============
+    all_points = np.vstack([motion_points, corner_points])
+    
+    # Apply spatial NMS for diversity
+    all_points = apply_nms(all_points, radius=nms_radius)
+    
+    # Shuffle
+    np.random.shuffle(all_points)
+    
+    # Ensure we have enough points (pad with grid if needed)
+    if len(all_points) < num_points * 0.8:  # Less than 80% target
+        print(f"[MotionSampling] WARNING: Only {len(all_points)} points after NMS, " \
+              f"padding with grid to reach {num_points}")
+        grid_points = sample_uniform_grid(img1, num_points - len(all_points), border=0.05)
+        all_points = np.vstack([all_points, grid_points])
+    
+    final_points = all_points[:num_points]
+    
+    # ============ Diagnostic Visualization ============
+    if save_diagnostics:
+        try:
+            import matplotlib.pyplot as plt
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Motion mask overlay with sampled points
+            fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+            
+            # Left: Motion mask overlay
+            axes[0].imshow(img1)
+            axes[0].imshow(motion_mask, cmap='Reds', alpha=0.3)
+            axes[0].set_title(f'Motion Mask (coverage={coverage:.1%})')
+            axes[0].axis('off')
+            
+            # Right: Sampled points
+            axes[1].imshow(img1)
+            axes[1].scatter(final_points[:, 0], final_points[:, 1], 
+                           c='lime', s=20, marker='o', alpha=0.8, edgecolors='black', linewidths=0.5)
+            
+            # Check how many points fall in motion regions
+            points_in_motion = motion_mask[final_points[:, 1].astype(int), final_points[:, 0].astype(int)]
+            motion_point_ratio = points_in_motion.sum() / len(final_points)
+            
+            axes[1].set_title(f'Sampled Points (n={len(final_points)}, {motion_point_ratio:.1%} in motion)')
+            axes[1].axis('off')
+            
+            plt.tight_layout()
+            plt.savefig(f'{output_dir}/motion_mask_with_points.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            print(f"[MotionSampling] Saved diagnostic to {output_dir}/motion_mask_with_points.png")
+            print(f"[MotionSampling] Points in motion regions: {motion_point_ratio:.1%}")
+        except ImportError:
+            print("[MotionSampling] WARNING: matplotlib not available, skipping diagnostics")
+    
+    print(f"[MotionSampling] Sampled {len(final_points)} points " \
+          f"(motion={len(motion_points)}, corners={len(corner_points)}, final after NMS={len(final_points)})")
+    
+    return final_points

@@ -174,9 +174,10 @@ def main():
     parser.add_argument("--num_tracking_points", type=int, default=384, help="Number of points to track (balanced for speed and coverage)")
     parser.add_argument("--tracking_weight", type=float, default=1.0)
     parser.add_argument("--sampling_method", type=str, default="combined",
-                        choices=["sobel_hybrid", "shi_tomasi", "combined", "texture", "grid"],
+                        choices=["sobel_hybrid", "shi_tomasi", "combined", "texture", "grid", "motion_mask"],
                         help="Point sampling strategy: sobel_hybrid (original), shi_tomasi (corners), "
-                             "combined (50%% corners + 30%% texture + 20%% grid, recommended), texture (high-texture), grid (uniform)")
+                             "combined (50%% corners + 30%% texture + 20%% grid, recommended), texture (high-texture), "
+                             "grid (uniform), motion_mask (GMFlow-based motion regions, 70%% motion + 30%% corners)")
     parser.add_argument("--image_height", type=int, default=512, 
                         help="Image height for rendering (512x512 recommended for BootsTAPIR)")
     parser.add_argument("--image_width", type=int, default=512,
@@ -257,6 +258,17 @@ def main():
             num_points=args.num_tracking_points
         )
         sampling_desc = "Uniform grid"
+    elif args.sampling_method == "motion_mask":
+        initial_points = point_sampling.sample_motion_driven_points(
+            initial_image,
+            target_image,
+            num_points=args.num_tracking_points,
+            device=args.device,
+            motion_ratio=0.7,
+            save_diagnostics=True,
+            output_dir=args.output_dir
+        )
+        sampling_desc = "Motion-driven (70% motion regions + 30% corners)"
     else:
         raise ValueError(f"Unknown sampling method: {args.sampling_method}")
     
