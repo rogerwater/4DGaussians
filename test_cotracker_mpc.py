@@ -178,6 +178,10 @@ def main():
                         help="Point sampling strategy: sobel_hybrid (original), shi_tomasi (corners), "
                              "combined (50%% corners + 30%% texture + 20%% grid, recommended), texture (high-texture), "
                              "grid (uniform), motion_mask (GMFlow-based motion regions, 70%% motion + 30%% corners)")
+    parser.add_argument("--resample_motion_mask_per_step", action="store_true", default=None,
+                        help="Re-sample motion mask at every MPC step (only effective with --sampling_method=motion_mask). "
+                             "Provides dense, accurate loss signals by keeping tracking points on moving objects. "
+                             "Default: True for motion_mask, False for other methods.")
     parser.add_argument("--image_height", type=int, default=512, 
                         help="Image height for rendering (512x512 recommended for BootsTAPIR)")
     parser.add_argument("--image_width", type=int, default=512,
@@ -188,6 +192,10 @@ def main():
                         help="Maximum action magnitude per step (increased to allow larger movements)")
     
     args = parser.parse_args()
+    
+    # Set default for resample_motion_mask_per_step based on sampling_method
+    if args.resample_motion_mask_per_step is None:
+        args.resample_motion_mask_per_step = (args.sampling_method == "motion_mask")
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)

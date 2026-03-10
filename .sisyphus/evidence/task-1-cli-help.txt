@@ -1,0 +1,60 @@
+usage: test_cotracker_mpc.py [-h] [--model_path MODEL_PATH]
+                             [--initial_image INITIAL_IMAGE]
+                             [--target_image TARGET_IMAGE]
+                             [--transforms_json TRANSFORMS_JSON]
+                             [--control_dim CONTROL_DIM]
+                             [--num_steps NUM_STEPS] [--horizon HORIZON]
+                             [--num_samples NUM_SAMPLES]
+                             [--opt_iters OPT_ITERS]
+                             [--num_tracking_points NUM_TRACKING_POINTS]
+                             [--tracking_weight TRACKING_WEIGHT]
+                             [--sampling_method {sobel_hybrid,shi_tomasi,combined,texture,grid,motion_mask}]
+                             [--resample_motion_mask_per_step]
+                             [--image_height IMAGE_HEIGHT]
+                             [--image_width IMAGE_WIDTH] [--device DEVICE]
+                             [--output_dir OUTPUT_DIR]
+                             [--action_limit ACTION_LIMIT]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --model_path MODEL_PATH
+  --initial_image INITIAL_IMAGE
+  --target_image TARGET_IMAGE
+  --transforms_json TRANSFORMS_JSON
+  --control_dim CONTROL_DIM
+  --num_steps NUM_STEPS
+                        Number of MPC execution steps (reduced for faster
+                        testing)
+  --horizon HORIZON     MPC planning horizon (reduced for faster planning)
+  --num_samples NUM_SAMPLES
+                        CEM samples per iteration (balanced for speed and
+                        exploration)
+  --opt_iters OPT_ITERS
+                        CEM optimization iterations
+  --num_tracking_points NUM_TRACKING_POINTS
+                        Number of points to track (balanced for speed and
+                        coverage)
+  --tracking_weight TRACKING_WEIGHT
+  --sampling_method {sobel_hybrid,shi_tomasi,combined,texture,grid,motion_mask}
+                        Point sampling strategy: sobel_hybrid (original),
+                        shi_tomasi (corners), combined (50% corners + 30%
+                        texture + 20% grid, recommended), texture (high-
+                        texture), grid (uniform), motion_mask (GMFlow-based
+                        motion regions, 70% motion + 30% corners)
+  --resample_motion_mask_per_step
+                        Re-sample motion mask at every MPC step (only
+                        effective with --sampling_method=motion_mask).
+                        Provides dense, accurate loss signals by keeping
+                        tracking points on moving objects. Default: True for
+                        motion_mask, False for other methods.
+  --image_height IMAGE_HEIGHT
+                        Image height for rendering (512x512 recommended for
+                        BootsTAPIR)
+  --image_width IMAGE_WIDTH
+                        Image width for rendering (512x512 recommended for
+                        BootsTAPIR)
+  --device DEVICE
+  --output_dir OUTPUT_DIR
+  --action_limit ACTION_LIMIT
+                        Maximum action magnitude per step (increased to allow
+                        larger movements)

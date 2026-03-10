@@ -1,0 +1,3 @@
+sampling_method: motion_mask
+resample_motion_mask_per_step: True
+TEST PASSED: Default is True for motion_mask
