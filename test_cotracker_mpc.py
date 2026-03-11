@@ -194,6 +194,9 @@ def main():
     
     args = parser.parse_args()
     
+    # Override device with remapped device (after CUDA_VISIBLE_DEVICES is set)
+    args.device = actual_device
+    
     # Set default for resample_motion_mask_per_step based on sampling_method
     if args.resample_motion_mask_per_step is None:
         args.resample_motion_mask_per_step = (args.sampling_method == "motion_mask")
