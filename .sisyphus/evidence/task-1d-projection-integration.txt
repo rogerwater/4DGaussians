@@ -1,0 +1,37 @@
+============================================================
+Task 1d Verification: Projection Integration
+============================================================
+
+[Test 1] Import projection functions...
+✅ Imports successful
+
+[Test 2] CEM requires_grad=True (PyTorch tensors)...
+  Before projection - Max violation: 1.000000e+00
+  After projection  - Max violation: 2.384186e-07
+✅ CEM (requires_grad=True) projection works correctly
+
+[Test 3] CEM requires_grad=False (NumPy arrays)...
+  Before projection - Max violation: 1.000000e+00
+  After projection  - Max violation: 2.384186e-07
+✅ CEM (requires_grad=False) projection works correctly
+
+[Test 4] MPPI (NumPy arrays)...
+  Before projection - Max violation: 1.000000e+00
+  After projection  - Max violation: 4.440892e-16
+✅ MPPI projection works correctly
+
+[Test 5] Gripper dimensions (12-14) unchanged...
+✅ Gripper dimensions preserved (max diff: 0.000000e+00)
+
+============================================================
+✅ ALL TESTS PASSED
+============================================================
+
+Summary:
+  - CEM (requires_grad=True): Projection applied correctly
+  - CEM (requires_grad=False): NumPy→Torch→NumPy conversion works
+  - MPPI: Projection applied correctly
+  - Gripper dimensions (12-14) preserved
+  - All joint angles satisfy sin²+cos²≈1 (tolerance: 1e-6)
+
+Task 1d: Integration COMPLETE ✅

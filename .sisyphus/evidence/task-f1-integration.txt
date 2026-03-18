@@ -1,0 +1,35 @@
+usage: demo_flow_guided_mpc.py [-h] --model_path MODEL_PATH
+                               [--iteration ITERATION] --initial_image
+                               INITIAL_IMAGE --target_image TARGET_IMAGE
+                               --control_dim CONTROL_DIM
+                               [--num_steps NUM_STEPS] [--horizon HORIZON]
+                               [--num_samples NUM_SAMPLES]
+                               [--opt_iters OPT_ITERS]
+                               [--flow_weight FLOW_WEIGHT]
+                               [--image_weight IMAGE_WEIGHT]
+                               [--vgg_weight VGG_WEIGHT]
+                               [--vgg_layer VGG_LAYER]
+                               [--image_weight_schedule {none,linear}]
+                               [--image_weight_start IMAGE_WEIGHT_START]
+                               [--use_sparse_render]
+                               [--sparse_ratio SPARSE_RATIO]
+                               [--image_height IMAGE_HEIGHT]
+                               [--image_width IMAGE_WIDTH] [--log_dir LOG_DIR]
+                               [--device DEVICE]
+                               [--sampling_strategy {uniform,adaptive,motion_only}]
+                               [--motion_focus_ratio MOTION_FOCUS_RATIO]
+                               [--direction_weight DIRECTION_WEIGHT]
+                               [--direction_loss_type {cosine,angle}]
+                               [--action_regularization_weight ACTION_REGULARIZATION_WEIGHT]
+                               [--max_action_delta MAX_ACTION_DELTA]
+                               [--use_motion_mask]
+                               [--motion_threshold_percentile MOTION_THRESHOLD_PERCENTILE]
+                               [--camera_distance CAMERA_DISTANCE]
+                               [--camera_elevation CAMERA_ELEVATION]
+                               [--camera_azimuth CAMERA_AZIMUTH]
+                               [--fov_degrees FOV_DEGREES] --transforms_json
+                               TRANSFORMS_JSON [--save_video]
+                               [--video_fps VIDEO_FPS]
+demo_flow_guided_mpc.py: error: the following arguments are required: --model_path, --initial_image, --target_image, --control_dim, --transforms_json
+
+ERROR conda.cli.main_run:execute(127): `conda run python demo_flow_guided_mpc.py --scene bouncingballs --horizon 10 --num_tracking_points 100 --opt_iters 10` failed. (See above for error)

@@ -1,0 +1,14 @@
+CASE invalid_2d
+numpy projected first12: [-0.7071067812 -0.7071067812 -0.7071067812 -0.7071067812  0.7071067812
+  0.7071067812 -0.7071067812 -0.7071067812  0.7071067812  0.7071067812
+  0.7071067812  0.7071067812]
+numpy pair sumsq: [1. 1. 1. 1. 1. 1.]
+numpy max abs deviation from 1: 2.220446049250313e-16
+torch projected first12: tensor([-0.7071, -0.7071, -0.7071, -0.7071,  0.7071,  0.7071, -0.7071, -0.7071,
+         0.7071,  0.7071,  0.7071,  0.7071], dtype=torch.float64)
+torch pair sumsq: tensor([1.0000, 1.0000, 1.0000, 1.0000, 1.0000, 1.0000], dtype=torch.float64)
+torch max abs deviation from 1: 2.220446049250313e-16
+gripper unchanged numpy: True
+gripper unchanged torch: True
+within_1e-6 numpy: True
+within_1e-6 torch: True
