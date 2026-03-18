@@ -157,24 +157,106 @@ def compute_image_difference(img1, img2):
         psnr = 20 * np.log10(1.0 / np.sqrt(mse))
     return mse, psnr
 
+def synthesize_planning_videos(output_dir, fps=10):
+    """
+    Synthesize MPC planning results into videos.
+    Creates two videos:
+    1. planning_result.mp4 - from step_xxxx_rendered.png files
+    2. planning_result_with_points.mp4 - from step_xxxx_with_points.png files
+    
+    Args:
+        output_dir: Directory containing rendered images
+        fps: Frames per second for videos (default: 10)
+    
+    Returns:
+        bool: True if at least one video was created successfully
+    """
+    import glob
+    import re
+    
+    def natural_sort_key(s):
+        return [int(text) if text.isdigit() else text.lower() 
+                for text in re.split('([0-9]+)', str(s))]
+    
+    output_path = Path(output_dir)
+    
+    rendered_pattern = str(output_path / "step_*_rendered.png")
+    rendered_images = sorted(glob.glob(rendered_pattern), key=natural_sort_key)
+    
+    points_pattern = str(output_path / "step_*_with_points.png")
+    points_images = sorted(glob.glob(points_pattern), key=natural_sort_key)
+    
+    if not rendered_images and not points_images:
+        print("  WARNING: No step images found for video synthesis")
+        return False
+    
+    success_count = 0
+    
+    if rendered_images:
+        video_path = output_path / "planning_result.mp4"
+        if create_video_from_images(rendered_images, video_path, fps):
+            print(f"  ✓ Rendered video: {video_path} ({len(rendered_images)} frames @ {fps} FPS)")
+            success_count += 1
+    
+    if points_images:
+        video_path = output_path / "planning_result_with_points.mp4"
+        if create_video_from_images(points_images, video_path, fps):
+            print(f"  ✓ Points video: {video_path} ({len(points_images)} frames @ {fps} FPS)")
+            success_count += 1
+    
+    return success_count > 0
+
+def create_video_from_images(image_paths, output_path, fps):
+    """Helper function to create video from image list"""
+    if not image_paths:
+        return False
+    
+    first_image = cv2.imread(str(image_paths[0]))
+    if first_image is None:
+        return False
+    
+    height, width = first_image.shape[:2]
+    
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_writer = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+    
+    if not video_writer.isOpened():
+        return False
+    
+    for img_path in image_paths:
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+        if img.shape[:2] != (height, width):
+            img = cv2.resize(img, (width, height))
+        video_writer.write(img)
+    
+    video_writer.release()
+    return True
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, 
                         default="/home/ubuntu/yyf/4DGaussians/outputs/dm_control_push_test_flow2/point_cloud/iteration_10000")
     parser.add_argument("--initial_image", type=str,
-                        default="/home/ubuntu/yyf/4DGaussians/assets/start-end/cam6_sample1_frame_00001.jpg")
+                        default="/home/ubuntu/yyf/4DGaussians/assets/user_provided/initial_frame.jpg")
     parser.add_argument("--target_image", type=str,
-                        default="/home/ubuntu/yyf/4DGaussians/assets/start-end/cam6_sample1_frame_00018.jpg")
+                        default="/home/ubuntu/yyf/4DGaussians/assets/user_provided/target_frame.jpg")
     parser.add_argument("--transforms_json", type=str,
-                        default="/home/ubuntu/yyf/4DGaussians/assets/example_transforms.json")
+                        default="/home/ubuntu/project/data/dm_control_push/transforms.json",
+                        help="Transforms JSON containing camera parameters and initial control u")
+    parser.add_argument("--camera_name", type=str, default="cam06",
+                        help="Camera name to use for rendering (e.g., cam06)")
+    parser.add_argument("--initial_frame_name", type=str, default="frame_00001",
+                        help="Frame name to extract initial control u from")
     parser.add_argument("--control_dim", type=int, default=15)
     parser.add_argument("--num_steps", type=int, default=10, help="Number of MPC execution steps (reduced for faster testing)")
     parser.add_argument("--horizon", type=int, default=5, help="MPC planning horizon (reduced for faster planning)")
     parser.add_argument("--num_samples", type=int, default=48, help="CEM samples per iteration (balanced for speed and exploration)")
-    parser.add_argument("--opt_iters", type=int, default=5, help="CEM optimization iterations")
+    parser.add_argument("--opt_iters", type=int, default=10, help="CEM optimization iterations")
     parser.add_argument("--num_tracking_points", type=int, default=384, help="Number of points to track (balanced for speed and coverage)")
     parser.add_argument("--tracking_weight", type=float, default=1.0)
-    parser.add_argument("--sampling_method", type=str, default="combined",
+    parser.add_argument("--sampling_method", type=str, default="motion_mask",
                         choices=["sobel_hybrid", "shi_tomasi", "combined", "texture", "grid", "motion_mask"],
                         help="Point sampling strategy: sobel_hybrid (original), shi_tomasi (corners), "
                              "combined (50%% corners + 30%% texture + 20%% grid, recommended), texture (high-texture), "
@@ -183,12 +265,12 @@ def main():
                         help="Re-sample motion mask at every MPC step (only effective with --sampling_method=motion_mask). "
                              "Provides dense, accurate loss signals by keeping tracking points on moving objects. "
                              "Default: True for motion_mask, False for other methods.")
-    parser.add_argument("--image_height", type=int, default=512, 
-                        help="Image height for rendering (512x512 recommended for BootsTAPIR)")
-    parser.add_argument("--image_width", type=int, default=512,
-                        help="Image width for rendering (512x512 recommended for BootsTAPIR)")
-    parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--output_dir", type=str, default="./outputs/cotracker_test")
+    parser.add_argument("--image_height", type=int, default=480, 
+                        help="Image height for rendering (480x480 for dm_control dataset)")
+    parser.add_argument("--image_width", type=int, default=480,
+                        help="Image width for rendering (480x480 for dm_control dataset)")
+    parser.add_argument("--device", type=str, default="cuda:2")
+    parser.add_argument("--output_dir", type=str, default="./outputs/cotracker_test_fix")
     parser.add_argument("--action_limit", type=float, default=0.8, 
                         help="Maximum action magnitude per step (increased to allow larger movements)")
     
@@ -271,16 +353,88 @@ def main():
         )
         sampling_desc = "Uniform grid"
     elif args.sampling_method == "motion_mask":
-        initial_points = point_sampling.sample_motion_driven_points(
+        # Use bidirectional flow with consistency check (Task 4)
+        print("  Computing bidirectional flow with consistency check...")
+        motion_mask, flow_forward, flow_magnitude, consistency_mask = \
+            point_sampling.adaptive_motion_mask_with_consistency(
+                initial_image,
+                target_image,
+                device=args.device,
+                percentile=70,
+                min_magnitude=1.0,
+                consistency_threshold=3.0,
+                morphology_kernel_size=5
+            )
+        
+        print(f"  Consistency: {consistency_mask.sum()}/{consistency_mask.size} pixels ({consistency_mask.mean()*100:.1f}%)")
+        print(f"  Motion mask: {motion_mask.sum()}/{motion_mask.size} pixels ({motion_mask.mean()*100:.1f}%)")
+        print(f"  Flow magnitude: mean={flow_magnitude[motion_mask].mean():.1f}px, max={flow_magnitude.max():.1f}px")
+        
+        # Sample points from motion regions (70%) + corners (30%)
+        motion_coords = np.column_stack(np.where(motion_mask))  # (K, 2) [y, x]
+        motion_points_candidates = motion_coords[:, [1, 0]].astype(np.float32)  # (K, 2) [x, y]
+        
+        num_motion = int(args.num_tracking_points * 0.7)
+        num_corners = args.num_tracking_points - num_motion
+        
+        # Sample motion points with flow magnitude weighting
+        if len(motion_points_candidates) >= num_motion:
+            # Compute flow magnitude weights for motion coordinates
+            motion_y, motion_x = motion_coords[:, 0], motion_coords[:, 1]
+            weights = flow_magnitude[motion_y, motion_x]
+            
+            # Normalize probabilities with zero-flow fallback
+            if weights.sum() > 0:
+                probabilities = weights / weights.sum()
+            else:
+                probabilities = np.ones(len(weights)) / len(weights)
+            
+            motion_indices = np.random.choice(len(motion_points_candidates), size=num_motion, replace=False, p=probabilities)
+            motion_points = motion_points_candidates[motion_indices]
+        else:
+            motion_points = motion_points_candidates
+            num_corners = args.num_tracking_points - len(motion_points)
+        
+        # Sample corner points (Shi-Tomasi)
+        corner_points = point_sampling.sample_shi_tomasi_points(
             initial_image,
-            target_image,
-            num_points=args.num_tracking_points,
-            device=args.device,
-            motion_ratio=0.7,
-            save_diagnostics=True,
-            output_dir=args.output_dir
+            num_points=num_corners,
+            quality_level=0.01,
+            min_distance=8
         )
-        sampling_desc = "Motion-driven (70% motion regions + 30% corners)"
+        
+        # Combine
+        initial_points = np.vstack([motion_points, corner_points])
+        
+        # Save diagnostic visualization
+        import matplotlib.pyplot as plt
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+        
+        # Flow magnitude
+        axes[0].imshow(flow_magnitude, cmap='hot')
+        axes[0].set_title(f'Flow Magnitude (max={flow_magnitude.max():.1f}px)')
+        axes[0].axis('off')
+        
+        # Consistency mask
+        axes[1].imshow(consistency_mask, cmap='gray')
+        axes[1].set_title(f'Consistency Mask ({consistency_mask.mean()*100:.1f}%)')
+        axes[1].axis('off')
+        
+        # Motion mask with sampled points
+        axes[2].imshow(initial_image)
+        axes[2].imshow(motion_mask, alpha=0.3, cmap='Reds')
+        axes[2].scatter(motion_points[:, 0], motion_points[:, 1], c='red', s=10, label=f'Motion ({len(motion_points)})')
+        axes[2].scatter(corner_points[:, 0], corner_points[:, 1], c='blue', s=10, label=f'Corners ({len(corner_points)})')
+        axes[2].set_title('Sampled Points on Motion Mask')
+        axes[2].legend()
+        axes[2].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(args.output_dir, "01_biflow_initialization.png"), dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved: 01_biflow_initialization.png")
+        
+        sampling_desc = f"Bidirectional flow (motion={len(motion_points)}, corners={len(corner_points)})"
     else:
         raise ValueError(f"Unknown sampling method: {args.sampling_method}")
     
@@ -317,6 +471,7 @@ def main():
     
     # 4. Load Camera Transforms and Initial Control
     print("\n[4/7] Loading camera transforms and initial control...")
+    print(f"  Using camera: {args.camera_name}, frame: {args.initial_frame_name}")
     transform_matrix = None
     focal_x = None
     focal_y = None
@@ -328,26 +483,41 @@ def main():
         with open(args.transforms_json, 'r') as f:
             transforms_data = json.load(f)
         
-        # Camera parameters
+        # cam06 -> cameras[5]: camera name uses 1-indexed, array uses 0-indexed
+        camera_number = int(args.camera_name.replace('cam', ''))
+        camera_index = camera_number - 1
+        
+        # Load camera parameters for specified camera
         cameras_meta = transforms_data.get('cameras', [])
-        if cameras_meta:
-            camera_meta = cameras_meta[0]
+        if camera_index < len(cameras_meta):
+            camera_meta = cameras_meta[camera_index]
             transform_matrix = np.array(camera_meta['transform_matrix'], dtype=np.float32)
             focal_x = camera_meta.get('fl_x') or camera_meta.get('focal_length')
             focal_y = camera_meta.get('fl_y') or camera_meta.get('focal_length')
             cx = camera_meta.get('cx', args.image_width / 2.0)
             cy = camera_meta.get('cy', args.image_height / 2.0)
-            print(f"  Camera loaded: fx={focal_x}, fy={focal_y}, cx={cx}, cy={cy}")
+            print(f"  Camera {args.camera_name} (index {camera_index}) loaded: fx={focal_x}, fy={focal_y}, cx={cx}, cy={cy}")
+        else:
+            print(f"  WARNING: Camera {args.camera_name} (index {camera_index}) not found in transforms.json")
         
-        # Initial control from JSON
+        # Load initial control u from specified frame
         frames = transforms_data.get('frames', [])
-        image_filename = os.path.basename(args.initial_image)
+        frame_path = f"{args.camera_name}/{args.initial_frame_name}.jpg"
+        print(f"  Looking for frame: {frame_path}")
+        
         for frame in frames:
-            if image_filename in frame.get('file_path', ''):
+            if frame.get('file_path', '') == frame_path:
                 if 'joint_pos' in frame:
                     initial_control = np.array(frame['joint_pos'], dtype=np.float32)
-                    print(f"  Initial control loaded from JSON: shape={initial_control.shape}")
+                    print(f"  ✓ Initial control u loaded from {frame_path}")
+                    print(f"    Control shape: {initial_control.shape}")
+                    print(f"    Control values (first 5): {initial_control[:5]}")
                     break
+        
+        if initial_control is None:
+            print(f"  WARNING: Frame {frame_path} not found in transforms.json")
+    else:
+        print(f"  WARNING: transforms.json not found at {args.transforms_json}")
     
     # If no initial control found, we'll let CEM explore (don't use zeros!)
     if initial_control is None:
@@ -419,7 +589,8 @@ def main():
         a_dim=args.control_dim,
         optimizer=optimizer,
         replan_interval=1,
-        use_initial_action=True  # Use initial control if available
+        initial_action=initial_control,  # Use initial control u from JSON
+        use_initial_action=True  # Use initial control at t=0
     )
     
     # 7. MPC Loop
@@ -428,6 +599,7 @@ def main():
     
     current_tracked_points = initial_points.copy()
     current_image = initial_image.copy()
+    prev_image = None  # For dynamic update (Task 5)
     
     observations = []
     actions = []
@@ -459,6 +631,74 @@ def main():
     for step in range(1, args.num_steps + 1):
         print(f"\n--- Step {step}/{args.num_steps} ---")
         
+        # ============================================================================
+        # 🆕 Task 5: Dynamic Tracking Point Update (Bidirectional Flow)
+        # ============================================================================
+        if prev_image is not None and args.sampling_method == "motion_mask":
+            print(f"  🔄 Dynamically updating tracking points (current → prev flow)...")
+            start_time = time.time()
+            
+            try:
+                updated_current_points, updated_target_points, debug_info = \
+                    point_sampling.update_tracking_points_dynamic(
+                        current_points=current_tracked_points,
+                        target_points=target_points,
+                        current_image=current_image,
+                        target_image=target_image,
+                        prev_image=prev_image,
+                        num_points_target=args.num_tracking_points,
+                        device=args.device,
+                        consistency_threshold=3.0,
+                        percentile=70,
+                        min_points_ratio=0.5,
+                        max_points_ratio=1.5
+                    )
+                
+                # Update tracking points
+                current_tracked_points = updated_current_points
+                target_points = updated_target_points
+                
+                update_time = time.time() - start_time
+                print(f"    ✓ Updated to {len(current_tracked_points)} points ({update_time:.2f}s)")
+                print(f"      Propagated: {debug_info['num_propagated']}, "
+                      f"Supplemented: {debug_info['num_supplemented']}")
+                
+                # Save debug visualization (every step)
+                if step % 1 == 0:  # Save every step
+                    step_dir = os.path.join(args.output_dir, f"step_{step:03d}_debug")
+                    os.makedirs(step_dir, exist_ok=True)
+                    
+                    import matplotlib.pyplot as plt
+                    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+                    
+                    # Flow magnitude
+                    axes[0].imshow(debug_info['flow_magnitude'], cmap='hot')
+                    axes[0].set_title(f'Flow Magnitude (Step {step})')
+                    axes[0].axis('off')
+                    
+                    # Consistency mask
+                    axes[1].imshow(debug_info['consistency_mask'], cmap='gray')
+                    axes[1].set_title(f'Consistency Mask')
+                    axes[1].axis('off')
+                    
+                    # Motion mask with points
+                    axes[2].imshow(current_image)
+                    axes[2].imshow(debug_info['motion_mask'], alpha=0.3, cmap='Reds')
+                    axes[2].scatter(current_tracked_points[:, 0], current_tracked_points[:, 1], 
+                                  c='cyan', s=10, alpha=0.8)
+                    axes[2].set_title(f'Updated Points (n={len(current_tracked_points)})')
+                    axes[2].axis('off')
+                    
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(step_dir, "dynamic_update.png"), dpi=150, bbox_inches='tight')
+                    plt.close()
+                    
+            except Exception as e:
+                print(f"    ⚠️ Dynamic update failed: {e}")
+                print(f"       Continuing with existing points...")
+        
+        # ============================================================================
+        
         # 🆕 Per-step motion mask resampling (Solution A)
         if args.resample_motion_mask_per_step and args.sampling_method == "motion_mask":
             step_dir = os.path.join(args.output_dir, f"step_{step:03d}")
@@ -487,11 +727,18 @@ def main():
                 torch.from_numpy(target_image).permute(2, 0, 1).float()
             ], dim=0).unsqueeze(0).to(args.device)
             
-            tracks_to_target, visibles_to_target = tracker.track(
+            tracks_to_target, visibles_to_target, confidence_to_target = tracker.track(
                 video_tensor_to_target,
-                current_tracked_points
+                current_tracked_points,
+                return_confidence=True
             )
             target_points = tracks_to_target[0, :, 1, :].cpu().numpy()
+            
+            # Check tracking quality using TAPIR's built-in confidence
+            target_confidence = confidence_to_target[0, :, 1].cpu().numpy()
+            reliable_mask = target_confidence > 0.5  # TAPIR research threshold
+            valid_ratio = reliable_mask.mean()
+            print(f"    ✓ Tracking quality: {valid_ratio*100:.1f}% points reliable (confidence > 0.5)")
             
             # Visualize resampled points on current frame
             vis_current_points = visualize_points(current_image, current_tracked_points, color=(255, 255, 0), radius=2)
@@ -544,43 +791,93 @@ def main():
         video_stack = np.stack([current_image, next_image_np])  # (2, H, W, 3)
         video_tensor = torch.from_numpy(video_stack).permute(0, 3, 1, 2).unsqueeze(0).to(args.device).float()
         
-        tracks, visibles = tracker.track(video_tensor, current_tracked_points)
+        tracks, visibles, confidence = tracker.track(
+            video_tensor, 
+            current_tracked_points,
+            return_confidence=True
+        )
         new_points = tracks[0, :, 1, :].cpu().numpy()
         new_visibles = visibles[0, :, 1].cpu().numpy()
+        new_confidence = confidence[0, :, 1].cpu().numpy()
         
+        # Check tracking quality using TAPIR's confidence metric
+        reliable_mask = new_confidence > 0.5
+        valid_ratio = reliable_mask.mean()
+        
+        print(f"  📊 Tracking quality: {valid_ratio*100:.1f}% reliable ({reliable_mask.sum()}/{len(reliable_mask)} points)")
+        
+        # Detect tracking failure using both visibility and confidence
         failed, failure_reason = point_sampling.detect_tracking_failure(
             tracks[0].cpu().numpy(),
             visibles[0].cpu().numpy()
         )
         
+        # Additional failure check: TAPIR confidence-based detection
+        if not failed and valid_ratio < 0.7:
+            failed = True
+            failure_reason = f"Low confidence ratio ({valid_ratio:.2f} < 0.7)"
+            print(f"  ⚠️ Tracking degraded: {failure_reason}")
+        
         if failed:
             print(f"  ⚠️ Tracking failure detected: {failure_reason}")
-            print(f"     Re-sampling points using {args.sampling_method} method...")
             
-            if args.sampling_method == "motion_mask":
-                # 🆕 NEW: Motion mask re-sampling on failure
-                new_points = point_sampling.sample_motion_driven_points(
-                    next_image_np,
-                    target_image,  # Use original target from initialization
-                    num_points=args.num_tracking_points,
-                    device=args.device,
-                    motion_ratio=0.7,
-                    save_diagnostics=False,  # Don't save diagnostics on failure (save time)
-                    output_dir=args.output_dir
-                )
-                print(f"     Re-sampled {len(new_points)} points using motion mask")
-            elif args.sampling_method == "sobel_hybrid":
-                new_points = sample_object_focused_points(next_image_np, num_points=args.num_tracking_points, object_ratio=0.7)
-            elif args.sampling_method == "shi_tomasi":
-                new_points = point_sampling.sample_shi_tomasi_points(next_image_np, num_points=args.num_tracking_points)
-            elif args.sampling_method == "combined":
-                new_points = point_sampling.sample_combined(next_image_np, num_points=args.num_tracking_points)
-            elif args.sampling_method == "texture":
-                new_points = point_sampling.sample_texture_points(next_image_np, num_points=args.num_tracking_points)
-            elif args.sampling_method == "grid":
-                new_points = point_sampling.sample_uniform_grid(next_image_np, num_points=args.num_tracking_points)
+            # Try optical flow-based recovery first (faster and more robust)
+            if valid_ratio >= 0.5:
+                print(f"     Attempting flow-based recovery (confidence={valid_ratio:.2f})...")
+                try:
+                    # Use update_tracking_points_dynamic for flow propagation
+                    current_tracked_points_updated, target_points_updated = point_sampling.update_tracking_points_dynamic(
+                        current_points=new_points,
+                        target_points=target_points,
+                        current_image=next_image_np,
+                        target_image=target_image,
+                        prev_image=current_image,
+                        num_points_target=args.num_tracking_points,
+                        device=args.device,
+                        percentile=70,
+                        consistency_threshold=3.0,
+                        min_points_ratio=0.5,
+                        max_points_ratio=1.5
+                    )
+                    new_points = current_tracked_points_updated
+                    target_points = target_points_updated
+                    failed = False  # Recovery successful - no need to re-sample
+                    print(f"     ✓ Flow-based recovery successful ({len(new_points)} points)")
+                except Exception as e:
+                    print(f"     ✗ Flow recovery failed: {e}")
+                    print(f"     Falling back to re-sampling...")
+                    # failed stays True to trigger re-sampling below
+            else:
+                print(f"     Confidence too low ({valid_ratio:.2f} < 0.5), re-sampling required...")
             
-            print(f"     Re-sampled {len(new_points)} new tracking points")
+            # If flow recovery failed or confidence is too low, re-sample
+            if failed and valid_ratio < 0.5:
+                print(f"     Re-sampling points using {args.sampling_method} method...")
+                
+                if args.sampling_method == "motion_mask":
+                    # 🆕 NEW: Motion mask re-sampling on failure
+                    new_points = point_sampling.sample_motion_driven_points(
+                        next_image_np,
+                        target_image,  # Use original target from initialization
+                        num_points=args.num_tracking_points,
+                        device=args.device,
+                        motion_ratio=0.7,
+                        save_diagnostics=False,  # Don't save diagnostics on failure (save time)
+                        output_dir=args.output_dir
+                    )
+                    print(f"     Re-sampled {len(new_points)} points using motion mask")
+                elif args.sampling_method == "sobel_hybrid":
+                    new_points = sample_object_focused_points(next_image_np, num_points=args.num_tracking_points, object_ratio=0.7)
+                elif args.sampling_method == "shi_tomasi":
+                    new_points = point_sampling.sample_shi_tomasi_points(next_image_np, num_points=args.num_tracking_points)
+                elif args.sampling_method == "combined":
+                    new_points = point_sampling.sample_combined(next_image_np, num_points=args.num_tracking_points)
+                elif args.sampling_method == "texture":
+                    new_points = point_sampling.sample_texture_points(next_image_np, num_points=args.num_tracking_points)
+                elif args.sampling_method == "grid":
+                    new_points = point_sampling.sample_uniform_grid(next_image_np, num_points=args.num_tracking_points)
+                
+                print(f"     Re-sampled {len(new_points)} new tracking points")
         else:
             visible_ratio = new_visibles.sum() / len(new_visibles)
             print(f"  Tracking status: OK ({new_visibles.sum()}/{len(new_visibles)} visible = {visible_ratio*100:.1f}%)")
@@ -594,6 +891,7 @@ def main():
         print(f"  Avg Distance to Target: {dist:.4f} pixels")
         
         # Update state
+        prev_image = current_image.copy()  # Task 5: Save for next step's dynamic update
         current_tracked_points = new_points
         current_image = next_image_np
         
@@ -674,8 +972,16 @@ def main():
     print(f"✓ Loss history saved: {loss_csv_path}")
     
     print("\n" + "="*70)
+    print("Synthesizing Videos")
+    print("="*70)
+    
+    synthesize_success = synthesize_planning_videos(args.output_dir, fps=10)
+    
+    print("\n" + "="*70)
     print("Test Complete!")
     print(f"All outputs saved to: {args.output_dir}")
+    if synthesize_success:
+        print("✓ Planning videos synthesized successfully")
     print("="*70)
 
 if __name__ == "__main__":

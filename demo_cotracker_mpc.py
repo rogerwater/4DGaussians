@@ -78,7 +78,7 @@ def run_cotracker_mpc(
     num_steps: int = 25,
     horizon: int = 10,
     num_samples: int = 32,
-    opt_iters: int = 5,
+    opt_iters: int = 10,
     num_tracking_points: int = 256,
     tracking_weight: float = 1.0,
     image_height: int = 256,

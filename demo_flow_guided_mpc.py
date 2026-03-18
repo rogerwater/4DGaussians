@@ -423,7 +423,7 @@ def setup_flow_guided_cem(
     control_dim: int,
     horizon: int = 10,
     num_samples: int = 64,
-    opt_iters: int = 5,
+    opt_iters: int = 10,
     flow_weight: float = 0.7,
     image_weight: float = 0.3,
     vgg_weight: float = 0.0,
@@ -539,7 +539,7 @@ def run_mpc_from_images(
     num_steps: int = 25,
     horizon: int = 5,
     num_samples: int = 32,
-    opt_iters: int = 5,
+    opt_iters: int = 10,
     flow_weight: float = 0.0,
     image_weight: float = 0.0,
     vgg_weight: float = 0.2,
@@ -1391,7 +1391,7 @@ def main():
                         help='规划horizon')
     parser.add_argument('--num_samples', type=int, default=64,
                         help='CEM采样数')
-    parser.add_argument('--opt_iters', type=int, default=5,
+    parser.add_argument('--opt_iters', type=int, default=10,
                         help='CEM优化迭代数')
     parser.add_argument('--flow_weight', type=float, default=0.7,
                         help='光流目标权重（默认0.7用于70%%光流策略）')
