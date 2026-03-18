@@ -1,4 +1,5 @@
 import numpy as np
+from mpc.constraint_utils import project_joint_angles_torch
 import time
 from hydra.utils import instantiate
 
@@ -218,6 +219,7 @@ class CEMOptimizer(Optimizer):
             import torch
 
             new_action_samples = torch.clip(new_action_samples, -1, 1)
+            new_action_samples = project_joint_angles_torch(new_action_samples, start_idx=0, end_idx=12)
             action_samples = torch.cat(
                 (
                     torch.from_numpy(context_actions).to(new_action_samples),
@@ -227,6 +229,10 @@ class CEMOptimizer(Optimizer):
             )
         else:
             new_action_samples = np.clip(new_action_samples, -1, 1)
+            import torch
+            new_action_samples_torch = torch.from_numpy(new_action_samples).float()
+            new_action_samples_torch = project_joint_angles_torch(new_action_samples_torch, start_idx=0, end_idx=12)
+            new_action_samples = new_action_samples_torch.cpu().numpy()
             action_samples = np.concatenate(
                 (context_actions, new_action_samples), axis=1
             )
@@ -300,12 +306,21 @@ class CEMOptimizer(Optimizer):
         # Reset rewards history for this planning step
         self.last_rewards_history = []
         
+        # Initialize mean: use init_mean if provided, otherwise use last action from history
         if init_mean is not None:
             mu = np.zeros((self.horizon, self.a_dim))
             mu[: len(init_mean)] = init_mean
             mu[len(init_mean) :] = init_mean[-1]
+        elif action_history is not None and len(action_history) > 0:
+            # Use last action from history as starting point (current control state u)
+            last_action = np.array(action_history[-1])
+            mu = np.tile(last_action[None], (self.horizon, 1))
+            if self.verbose:
+                print(f"  Initializing CEM from current control u (from action_history)")
         else:
             mu = np.zeros((self.horizon, self.a_dim))
+            if self.verbose:
+                print(f"  WARNING: Initializing CEM from zero (no action history available)")
         var = np.tile((self.init_std**2)[None], (self.horizon, 1))
 
         for iter in range(self.opt_iters):

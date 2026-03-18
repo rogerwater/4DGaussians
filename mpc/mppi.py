@@ -1,4 +1,5 @@
 import numpy as np
+from mpc.constraint_utils import project_joint_angles
 import time
 
 from mpc.optimizer import Optimizer
@@ -66,6 +67,7 @@ class MPPIOptimizer(Optimizer):
 
         new_action_samples = self.sampler.sample_actions(self.num_samples, mu, std)
         new_action_samples = np.clip(new_action_samples, -1, 1)
+        new_action_samples = project_joint_angles(new_action_samples, start_idx=0, end_idx=12)
         action_samples = np.concatenate((context_actions, new_action_samples), axis=1)
 
         batch = {

@@ -852,6 +852,7 @@ class ActionRegularizationObjective(Objective):
         penalty_scale: str = 'quadratic',  # 'linear', 'quadratic', 'exponential'
         apply_to_joints_only: bool = True,  # 是否只对关节角度应用（不包括gripper）
         num_joints: int = 6,  # 关节数量（每个关节用sin/cos表示，共12维）
+        unit_circle_penalty_weight: float = 10.0,  # Penalty weight for unit circle constraint
         current_pos_key: str = 'current_joint_pos',  # 当前关节位置的键名
     ):
         super().__init__(weight)
@@ -861,6 +862,7 @@ class ActionRegularizationObjective(Objective):
         self.penalty_scale = penalty_scale
         self.apply_to_joints_only = apply_to_joints_only
         self.num_joints = num_joints
+        self.unit_circle_penalty_weight = unit_circle_penalty_weight
         self.current_pos_key = current_pos_key
     
     def compute_reward(
@@ -1033,6 +1035,14 @@ class ActionRegularizationObjective(Objective):
                 mag_penalty = excess_mag
             
             total_penalty += mag_penalty.sum(dim=(1, 2)) if len(mag_penalty.shape) > 2 else mag_penalty.sum(dim=1)
+        
+        # Unit circle constraint penalty
+        if self.unit_circle_penalty_weight > 0:
+            sin_vals = actions[..., 0:12:2]
+            cos_vals = actions[..., 1:12:2]
+            unit_error = (sin_vals**2 + cos_vals**2 - 1.0)**2
+            unit_penalty = unit_error.sum(dim=-1).sum(dim=-1)
+            total_penalty = total_penalty + self.unit_circle_penalty_weight * unit_penalty
         
         # 归一化：除以时间步数
         if T > 0:
