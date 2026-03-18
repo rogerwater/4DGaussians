@@ -87,6 +87,15 @@ python demo_flow_guided_mpc.py --config configs/4dgs_control.yaml
 - `render.py` - Visual inspection of rendered images
 - Manual verification against paper benchmarks
 
+**Test Organization**: All test scripts, demo applications, and experimental utilities are located in the `test/` directory:
+- `test/unit/` - Unit tests for individual components (e.g., `test_biflow_functions.py`)
+- `test/integration/` - Integration tests for end-to-end workflows (e.g., `test_cotracker_mpc.py`)
+- `test/demos/` - Demo scripts and visualizations (e.g., `demo_flow_guided_mpc.py`, `visualize_flow_stages.py`)
+- `test/scripts/` - Experimental utilities and analysis tools (e.g., `inverse_control_recovery.py`)
+- `test/notebooks/` - Jupyter notebooks for interactive exploration (e.g., `4DGaussians.ipynb`)
+
+See `test/README.md` for detailed testing guidelines and usage examples.
+
 ---
 
 ## Code Style Guidelines
@@ -299,6 +308,14 @@ ModelParams.resolution = 2  # Override parent value
 6. **Architecture variants**: The codebase supports both HexPlane (6-plane space-time) and TriPlane (3-plane spatial) architectures. Check `args.use_triplane` to determine which is active.
 
 7. **Research focus**: Prioritize correctness and reproducibility over optimization. Avoid refactoring unless explicitly requested.
+
+8. **Test script placement**: All test scripts, demos, and experimental code belong in `test/` directory. When creating new test files:
+   - Unit tests → `test/unit/test_<component>.py`
+   - Integration tests → `test/integration/test_<feature>.py`
+   - Demo scripts → `test/demos/demo_<feature>.py`
+   - Experimental utilities → `test/scripts/<descriptive_name>.py`
+   - Jupyter notebooks → `test/notebooks/<name>.ipynb`
+   - **Never** create test files in the root directory or `scripts/` folder
 
 ---
 

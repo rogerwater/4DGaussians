@@ -1,9 +1,16 @@
 {
-  "active_plan": "/home/ubuntu/yyf/4DGaussians/.sisyphus/plans/motion-driven-mask-sampling.md",
-  "started_at": "2026-03-10T03:27:55.550Z",
+  "active_plan": "/home/ubuntu/yyf/4DGaussians/.sisyphus/plans/mpc-improvements.md",
+  "started_at": "2026-03-17T13:07:24.399Z",
   "session_ids": [
-    "ses_33dbc5828ffer7SBbCwkzV4p7m"
+    "ses_304b497d8ffeCUm8Id5SCvztTt",
+    "ses_30412fcf8ffeeJ1LLwhuPx7FMw",
+    "ses_30410b169ffe3lCk0bxVPYAAcu",
+    "ses_3040d7e6cffeoluhj84t5Vph96",
+    "ses_3040ac0b5ffegqiLoHMXbCjKH8",
+    "ses_30405497bffeZow1x1JNJ8Gsql",
+    "ses_304018e77ffexLbWvqkVfoxcXD"
   ],
-  "plan_name": "motion-driven-mask-sampling",
+  "plan_name": "mpc-improvements",
+  "worktree_path": "/home/ubuntu/yyf/4DGaussians",
   "agent": "atlas"
 }

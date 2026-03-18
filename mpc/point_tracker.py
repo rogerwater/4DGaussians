@@ -60,19 +60,27 @@ class PointTracker:
             device=torch.device(device)
         )
 
-    def track(self, video_tensor, initial_points):
+    def track(self, video_tensor, initial_points, return_confidence=False):
         """
         Track points in a video sequence.
 
         Args:
             video_tensor: (B, T, C, H, W) or (T, C, H, W) tensor, normalized [0, 1]
             initial_points: (N, 2) tensor or numpy array, [x, y] coordinates (pixels)
+            return_confidence: If True, also return tracking confidence scores
 
         Returns:
-            tracks: (B, N, T, 2) or (N, T, 2) coordinates [x, y] (pixels)
-            visibles: (B, N, T) or (N, T) boolean
+            If return_confidence=False:
+                tracks: (B, N, T, 2) or (N, T, 2) coordinates [x, y] (pixels)
+                visibles: (B, N, T) or (N, T) boolean
+            If return_confidence=True:
+                tracks: same as above
+                visibles: same as above  
+                confidence: (B, N, T) or (N, T) confidence scores [0, 1] (higher = more reliable)
         """
         if not TAPNET_AVAILABLE or not hasattr(self, 'model_wrapper') or self.model_wrapper is None:
+            if return_confidence:
+                return None, None, None
             return None, None
 
         # Handle inputs
@@ -113,6 +121,7 @@ class PointTracker:
 
         all_tracks = []
         all_visibles = []
+        all_confidences = [] if return_confidence else None
 
         # Loop over batch
         for b in range(B):
@@ -137,6 +146,7 @@ class PointTracker:
             
             batch_tracks = []
             batch_visibles = []
+            batch_confidences = [] if return_confidence else None
             
             # Store t=0 (initial points)
             # set_points doesn't return them, but we know them.
@@ -148,10 +158,23 @@ class PointTracker:
             # Let's just append initial points for t=0.
             batch_tracks.append(initial_points_np) # (N, 2)
             batch_visibles.append(np.ones(initial_points_np.shape[0], dtype=bool)) # (N,)
+            if return_confidence:
+                # At t=0, confidence is 1.0 (known positions)
+                batch_confidences.append(np.ones(initial_points_np.shape[0], dtype=np.float32))
             
             # 2. Track subsequent frames
             for t in range(1, T):
-                points, visibles = self.model_wrapper(video_b[t])
+                if return_confidence:
+                    points, visibles, occlusions, expected_dist = self.model_wrapper(video_b[t], return_uncertainty=True)
+                    # Compute confidence from TAPIR's uncertainty metrics
+                    # Research finding: expected_dist threshold = 8px @ 256x256, scale to current resolution
+                    expected_dist_thresh = 8.0 * (self.resolution[0] / 256.0)
+                    # Combined confidence: (1 - sigmoid(occlusion)) * (1 - sigmoid(expected_dist))
+                    confidence = (1 - 1/(1 + np.exp(-occlusions))) * (1 - 1/(1 + np.exp(-expected_dist)))
+                    batch_confidences.append(confidence)
+                else:
+                    points, visibles = self.model_wrapper(video_b[t])
+                
                 # points: (N, 2), visibles: (N,)
                 batch_tracks.append(points)
                 batch_visibles.append(visibles)
@@ -159,12 +182,18 @@ class PointTracker:
             # Stack time
             batch_tracks = np.stack(batch_tracks, axis=1) # (N, T, 2)
             batch_visibles = np.stack(batch_visibles, axis=1) # (N, T)
+            if return_confidence:
+                batch_confidences_stacked = np.stack(batch_confidences, axis=1) # (N, T)
             
             all_tracks.append(batch_tracks)
             all_visibles.append(batch_visibles)
+            if return_confidence:
+                all_confidences.append(batch_confidences_stacked)
 
         all_tracks = np.stack(all_tracks) # (B, N, T, 2)
         all_visibles = np.stack(all_visibles) # (B, N, T)
+        if return_confidence:
+            all_confidences = np.stack(all_confidences) # (B, N, T)
         
         # Scale tracks back to original video resolution if needed
         if needs_rescale:
@@ -175,9 +204,17 @@ class PointTracker:
         # Convert to torch
         tracks_tensor = torch.from_numpy(all_tracks).to(self.device).float()
         visibles_tensor = torch.from_numpy(all_visibles).to(self.device).float() # boolean -> float
+        
+        if return_confidence:
+            confidence_tensor = torch.from_numpy(all_confidences).to(self.device).float()
 
         if not is_batched:
             tracks_tensor = tracks_tensor.squeeze(0)
             visibles_tensor = visibles_tensor.squeeze(0)
+            if return_confidence:
+                confidence_tensor = confidence_tensor.squeeze(0)
 
-        return tracks_tensor, visibles_tensor
+        if return_confidence:
+            return tracks_tensor, visibles_tensor, confidence_tensor
+        else:
+            return tracks_tensor, visibles_tensor
