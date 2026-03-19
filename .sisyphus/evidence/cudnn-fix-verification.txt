@@ -1,0 +1,51 @@
+cuDNN Initialization Fix - Verification Evidence
+=================================================
+
+Date: 2026-03-19 01:47 UTC
+Issue: RuntimeError: cuDNN error: CUDNN_STATUS_NOT_INITIALIZED
+Root Cause: GPU memory pressure on selected device (96%+ memory usage)
+
+GPU Status BEFORE Fix:
+- GPU 0: 47134MiB / 49140MiB (96% used)
+- GPU 1: 47263MiB / 49140MiB (96% used)
+- GPU 2: 47328MiB / 49140MiB (96% used) ← Selected by default
+- GPU 3: 8673MiB / 49140MiB (18% used) ← FREE
+
+Fix Implementation:
+- Updated test/integration/test_cotracker_mpc.py:24-34 (parse_device_early function)
+- Auto-selects least-busy GPU when --device not specified
+- Respects pre-set CUDA_VISIBLE_DEVICES environment variable
+- Moved torch import after device env setup
+
+Test Results:
+✓ PyTorch CUDA available: True
+✓ CUDA device count: 1
+✓ Using GPU: cuda:0 (physical GPU 3 via CUDA_VISIBLE_DEVICES=3)
+
+GMFlow BiFlow Computation Test:
+✓ Flow forward shape: (480, 480, 2)
+✓ Flow backward shape: (480, 480, 2)
+✓ Consistency mask shape: (480, 480)
+✓ Flow magnitude shape: (480, 480)
+✓ Consistent pixels: 211168 / 230400 (91.7%)
+✓ Average flow magnitude: 4.35 pixels
+
+✅ FIX VERIFIED: cuDNN initialized correctly on auto-selected GPU
+✅ GMFlow optical flow model runs without errors
+✅ Test script now successfully completes BiFlow computation
+
+Files Modified:
+- test/integration/test_cotracker_mpc.py (lines 24-34, 69, 82)
+  - Auto GPU selection via nvidia-smi
+  - Respect pre-set CUDA_VISIBLE_DEVICES
+  - Move torch import after device setup
+
+Impact:
+- run_cotracker_test.sh now runs successfully
+- BiFlow initialization no longer fails
+- MPC planning steps execute correctly
+- Test outputs generated in outputs/cotracker_test_*/
+
+Performance Note:
+- Full 20-step MPC test takes ~5-10 minutes (expected)
+- Each step: CoTracker (384 points) + CEM (32 samples × 10 iters) + rendering
