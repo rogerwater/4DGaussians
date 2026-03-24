@@ -44,7 +44,7 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     time : float
-    control_vec : np.array
+    action_vec : np.array
     mask: np.array
     camera_idx: int
     depth: np.array
@@ -121,7 +121,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         image = PILtoTorch(image,None)
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                               image_path=image_path, image_name=image_name, width=width, height=height,
-                              time = float(idx/len(cam_extrinsics)), control_vec=None, mask=None) # default by monocular settings.
+                              time = float(idx/len(cam_extrinsics)), action_vec=None, mask=None) # default by monocular settings.
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -263,7 +263,7 @@ def generateCamerasFromTransforms(path, template_transformsfile, extension, maxt
         FovX = fovx
         cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=None, image_name=None, width=image.shape[1], height=image.shape[2],
-                            time = time, control_vec=None, mask=None))
+                            time = time, action_vec=None, mask=None))
     return cam_infos
 def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png", mapper = {}):
     cam_infos = []
@@ -301,7 +301,7 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
             cam_infos.append(CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                             image_path=image_path, image_name=image_name, width=image.shape[1], height=image.shape[2],
-                            time = time, control_vec=None, mask=None))
+                            time = time, action_vec=None, mask=None))
             
     return cam_infos
 def read_timeline(path):

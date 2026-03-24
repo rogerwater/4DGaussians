@@ -17,11 +17,11 @@ ModelHiddenParams = dict(
     empty_voxel = False,
     render_process = False,
     static_mlp = False,
-    control_input_dim = 8,
-    control_hidden_dim = 256,  
-    control_use_pe = True,
-    control_num_frequencies = 4,
-    control_activation = 'relu'
+    action_input_dim = 8,
+    action_hidden_dim = 256,  
+    action_use_pe = True,
+    action_num_frequencies = 4,
+    action_activation = 'relu'
 )
 
 OptimizationParams = dict(

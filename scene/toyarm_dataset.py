@@ -24,7 +24,7 @@ class CameraInfo(NamedTuple):
     width: int
     height: int
     time : float
-    control_vec : np.array
+    action_vec : np.array
     mask: np.array
     camera_idx: int
     depth: np.array
@@ -284,7 +284,7 @@ class ToyArmDataset(Dataset):
         # Get camera parameters
         R, T = self._get_camera_params(index)
         time = frame['time']
-        control_vec = frame['joint_pos']
+        action_vec = frame['joint_pos']
         
         # Get paths
         image_path = os.path.join(self.datadir, frame['file_path'])
@@ -303,7 +303,7 @@ class ToyArmDataset(Dataset):
             width=self.width,
             height=self.height,
             time=time,
-            control_vec=control_vec,
+            action_vec=action_vec,
             mask=None,
             camera_idx=frame['camera_idx'],
             depth=depth,
@@ -315,7 +315,6 @@ class ToyArmDataset(Dataset):
     def load_pose(self, index):
         return self._get_camera_params(index)
     
-    def load_control_vec(self, index):
+    def load_action_vec(self, index):
         frame = self.frames[index]
-        return self._normalize_control_vec(frame['joint_pos'])
-
+        return self._normalize_action_vec(frame['joint_pos'])

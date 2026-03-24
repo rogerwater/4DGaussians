@@ -1,23 +1,17 @@
-# 
-# Control Encoder for Controllable 4D Gaussian Splatting
-# Encodes multi-dimensional control inputs into 1D latent representation for HexPlane
-#
-
-
 import torch
 import torch.nn as nn
 import torch.nn.init as init
 
 
-class ControlEncoder(nn.Module):
+class ActionEncoder(nn.Module):
     """
-    Control Encoder for Controllable 4D Gaussian Splatting
+    Action Encoder for Controllable 4D Gaussian Splatting
 
     Architecture:
-        Input: control_vector [B, input_dim] - N-dimensional control parameters
+        Input: action_vector [B, input_dim] - N-dimensional action parameters
         Optional: Positional Encoding (Fourier Features)
         MLP: [input_dim] -> [hidden] -> [hidden] -> [hidden/2] -> [1]
-        Output: control_latent [B, 1] - Normalized control latent in [-1, 1]
+        Output: action_latent [B, 1] - Normalized action latent in [-1, 1]
         
     Args:
         input_dim (int): Dimensionality of input control vector (default: 6)
@@ -37,7 +31,7 @@ class ControlEncoder(nn.Module):
         num_frequencies=4,
         activation='relu'
     ):
-        super(ControlEncoder, self).__init__()
+        super(ActionEncoder, self).__init__()
         
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -85,94 +79,94 @@ class ControlEncoder(nn.Module):
                 if m.bias is not None:
                     init.zeros_(m.bias)
                     
-    def position_encoding(self, control_vec):
+    def position_encoding(self, action_vec):
         """
-        Apply positional encoding to control vector.
+        Apply positional encoding to action vector.
         
         Args:
-            control_vec: [B, input_dim] - Raw control vector
+            action_vec: [B, input_dim] - Raw action vector
             
         Returns:
             encoded: [B, input_dim * (1 + 2*num_frequencies)] - Encoded features
         """
         
         if not self.use_pe:
-            return control_vec
+            return action_vec
         
-        encoded = [control_vec]
+        encoded = [action_vec]
         
         for freq in self.freq_bands:
-            encoded.append(torch.sin(control_vec * freq))
-            encoded.append(torch.cos(control_vec * freq))
+            encoded.append(torch.sin(action_vec * freq))
+            encoded.append(torch.cos(action_vec * freq))
             
         return torch.cat(encoded, dim=-1)
     
-    def forward(self, control_vec):
+    def forward(self, action_vec):
         """
-        Forward pass: Encode control vector to control latent
+        Forward pass: Encode action vector to action latent
         
         Args:
-            control_vec: [B, input_dim] - Control vector
-                        Recommended to normalize to [-1, 1] or [-π, π]
+            action_vec: [B, input_dim] - Action vector
+                      Recommended to normalize to [-1, 1] or [-pi, pi]
         
         Returns:
-            control_latent: [B, 1] - Encoded control latent in range [-1, 1]
+            action_latent: [B, 1] - Encoded action latent in range [-1, 1]
         """
         
-        assert control_vec.shape[-1] == self.input_dim, \
-            f"Expected {self.input_dim}D control vector, got {control_vec.shape[-1]}D"
+        assert action_vec.shape[-1] == self.input_dim, \
+            f"Expected {self.input_dim}D action vector, got {action_vec.shape[-1]}D"
             
-        encoded_input = self.position_encoding(control_vec)
+        encoded_input = self.position_encoding(action_vec)
         
-        control_latent = self.encoder(encoded_input)
+        action_latent = self.encoder(encoded_input)
         
-        return control_latent
+        return action_latent
     
-    def encode_batch(self, control_vec_batch):
+    def encode_batch(self, action_vec_batch):
         """
         Batch encoding interface for compatibility
         
         Args:
-            control_vec_batch: [B, N, input_dim] - Batched control vectors
+            action_vec_batch: [B, N, input_dim] - Batched action vectors
             
         Returns:
-            control_latent: [B, N, 1] - Batched encoded results
+            action_latent: [B, N, 1] - Batched encoded results
         """
         
-        batch_size = control_vec_batch.shape[0]
-        num_points = control_vec_batch.shape[1]
+        batch_size = action_vec_batch.shape[0]
+        num_points = action_vec_batch.shape[1]
         
         # Reshape : [B, N, D] -> [B*N, D]
-        control_vec_flat = control_vec_batch.reshape(-1, self.input_dim)
+        action_vec_flat = action_vec_batch.reshape(-1, self.input_dim)
         
-        control_latent_flat = self.forward(control_vec_flat)
+        action_latent_flat = self.forward(action_vec_flat)
         
-        control_latent = control_latent_flat.reshape(batch_size, num_points, -1)
+        action_latent = action_latent_flat.reshape(batch_size, num_points, -1)
         
-        return control_latent
+        return action_latent
     
 
-def create_control_encoder(config):
+def create_action_encoder(config):
     encoder_args = {
-        'input_dim': getattr(config, 'control_input_dim', 6),
-        'hidden_dim': getattr(config, 'control_hidden_dim', 64),
+        'input_dim': getattr(config, 'action_input_dim', 6),
+        'hidden_dim': getattr(config, 'action_hidden_dim', 64),
         'output_dim': 1,
-        'use_positional_encoding': getattr(config, 'control_use_pe', False),
-        'num_frequencies': getattr(config, 'control_num_frequencies', 4),
-        'activation': getattr(config, 'control_activation', 'relu')
+        'use_positional_encoding': getattr(config, 'action_use_pe', False),
+        'num_frequencies': getattr(config, 'action_num_frequencies', 4),
+        'activation': getattr(config, 'action_activation', 'relu')
     }
     
-    return ControlEncoder(**encoder_args)
+    return ActionEncoder(**encoder_args)
 
 
 # testing functions
-def test_control_encoder():
+def test_action_encoder():
     print("=" * 70)
-    print("Testing ControlEncoder")
+    print("Testing ActionEncoder")
     print("=" * 70)
 
     # Create encoder
-    encoder = ControlEncoder(
+    encoder = ActionEncoder(
         input_dim=6,
         hidden_dim=64,
         output_dim=1,
@@ -193,30 +187,30 @@ def test_control_encoder():
     
     # Test data
     batch_size = 10
-    control_vec = torch.randn(batch_size, 6) * 3.14  # Random angles in [-π, π]
+    action_vec = torch.randn(batch_size, 6) * 3.14  # Random angles in [-pi, pi]
     
     print(f"\nInput:")
-    print(f"  Shape: {control_vec.shape}")
-    print(f"  Range: [{control_vec.min():.3f}, {control_vec.max():.3f}]")
+    print(f"  Shape: {action_vec.shape}")
+    print(f"  Range: [{action_vec.min():.3f}, {action_vec.max():.3f}]")
     
     # Forward pass
     with torch.no_grad():
-        control_latent = encoder(control_vec)
+        action_latent = encoder(action_vec)
     
     print(f"\nOutput:")
-    print(f"  Shape: {control_latent.shape}")
-    print(f"  Range: [{control_latent.min():.3f}, {control_latent.max():.3f}]")
+    print(f"  Shape: {action_latent.shape}")
+    print(f"  Range: [{action_latent.min():.3f}, {action_latent.max():.3f}]")
     print(f"  Expected range: [-1.0, 1.0]")
     
     # Test gradient flow
-    control_vec.requires_grad = True
-    control_latent = encoder(control_vec)
-    loss = control_latent.sum()
+    action_vec.requires_grad = True
+    action_latent = encoder(action_vec)
+    loss = action_latent.sum()
     loss.backward()
     
     print(f"\nGradient Check:")
-    print(f"  Input gradient exists: {control_vec.grad is not None}")
-    print(f"  Input gradient norm: {control_vec.grad.norm():.6f}")
+    print(f"  Input gradient exists: {action_vec.grad is not None}")
+    print(f"  Input gradient norm: {action_vec.grad.norm():.6f}")
     
     # Test interpolation smoothness
     vec_a = torch.zeros(1, 6)
@@ -243,32 +237,32 @@ def test_control_encoder():
     print("=" * 70)
     
     
-def visualize_control_space(encoder, num_samples=100, save_path=None):
+def visualize_action_space(encoder, num_samples=100, save_path=None):
     """
-    Visualize the learned control space by sampling
+    Visualize the learned action space by sampling
     
     Args:
-        encoder: ControlEncoder instance
+        encoder: ActionEncoder instance
         num_samples: Number of samples to generate
         save_path: Optional path to save visualization
     """
     import numpy as np
     import matplotlib.pyplot as plt
     
-    print(f"\nVisualizing control space with {num_samples} samples...")
+    print(f"\nVisualizing action space with {num_samples} samples...")
     
     encoder.eval()
     with torch.no_grad():
-        # Sample random control vectors
-        control_vecs = torch.randn(num_samples, encoder.input_dim) * 2.0
-        latents = encoder(control_vecs).squeeze().numpy()
+        # Sample random action vectors
+        action_vecs = torch.randn(num_samples, encoder.input_dim) * 2.0
+        latents = encoder(action_vecs).squeeze().numpy()
         
         # Plot histogram
         plt.figure(figsize=(10, 6))
         plt.hist(latents, bins=50, alpha=0.7, edgecolor='black')
-        plt.xlabel('Control Latent Value')
+        plt.xlabel('Action Latent Value')
         plt.ylabel('Frequency')
-        plt.title(f'Distribution of Control Latents ({num_samples} samples)')
+        plt.title(f'Distribution of Action Latents ({num_samples} samples)')
         plt.axvline(x=-1, color='r', linestyle='--', label='Lower bound')
         plt.axvline(x=1, color='r', linestyle='--', label='Upper bound')
         plt.legend()
@@ -291,11 +285,11 @@ def visualize_control_space(encoder, num_samples=100, save_path=None):
 
 if __name__ == "__main__":
     # Run basic tests
-    test_control_encoder()
+    test_action_encoder()
     
-    # Optional: Visualize control space
+    # Optional: Visualize action space
     try:
-        encoder = ControlEncoder(input_dim=6, hidden_dim=64)
-        visualize_control_space(encoder, num_samples=1000)
+        encoder = ActionEncoder(input_dim=6, hidden_dim=64)
+        visualize_action_space(encoder, num_samples=1000)
     except ImportError:
         print("\nNote: matplotlib not available, skipping visualization")   

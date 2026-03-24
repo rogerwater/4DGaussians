@@ -79,7 +79,7 @@ class ModelHiddenParams(ParamGroup):
         self.posebase_pe = 10 # useless
         self.scale_rotation_pe = 2 # useless
         self.opacity_pe = 2 # useless
-        self.timenet_width = 64 # [DEPRECATED] legacy time encoder hidden width, replaced by control_encoder
+        self.timenet_width = 64 # [DEPRECATED] legacy time encoder hidden width, replaced by action_encoder
         self.timenet_output = 32 # [DEPRECATED] legacy time encoder output dim, kept for compatibility but unused
         self.bounds = 1.6 
         self.plane_tv_weight = 0.0001 # TV loss of spatial grid
@@ -106,13 +106,13 @@ class ModelHiddenParams(ParamGroup):
         # ========== Architecture Selection ==========
         self.use_triplane = False  # Set True to use TriPlane instead of HexPlane
         
-        # ========== Control Signal Configuration ==========
-        self.control_input_dim = 6
-        self.control_hidden_dim = 64
-        self.control_use_pe = False
-        self.control_num_frequencies = 4
-        self.control_activation = 'relu'
-        self.control_output_dim = None  # None = use PE output directly (for TriPlane)
+        # ========== Action Signal Configuration ==========
+        self.action_input_dim = 6
+        self.action_hidden_dim = 64
+        self.action_use_pe = False
+        self.action_num_frequencies = 4
+        self.action_activation = 'relu'
+        self.action_output_dim = None  # None = use PE output directly (for TriPlane)
         
         # ========== FiLM Fusion Configuration ==========
         self.film_hidden_dim = 64      # Hidden dim for FiLM condition network
@@ -162,6 +162,14 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold_coarse = 0.0002
         self.densify_grad_threshold_fine_init = 0.0002
         self.densify_grad_threshold_after = 0.0002
+        
+        self.flow_start_iter = 4000
+        self.densify_grad_threshold = 0.0002
+        self.opacity_cull = 0.05
+        self.use_motion_densification = True
+        self.densify_motion_threshold = 0.001
+        self.motion_grad_weight = 0.5
+        
         self.pruning_from_iter = 500
         self.pruning_interval = 100
         self.opacity_threshold_coarse = 0.005

@@ -57,6 +57,11 @@ class GaussianModel:
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
+        
+        self.motion_gradient_accum = torch.empty(0)
+        self.motion_direction_accum = torch.empty(0)
+        self.motion_denom = torch.empty(0)   
+        
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
@@ -168,6 +173,9 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self._deformation_accum = torch.zeros((self.get_xyz.shape[0],3),device="cuda")
         
+        self.motion_gradient_accum = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.motion_direction_accum = torch.zeros((self.get_xyz.shape[0], 3), device="cuda")
+        self.motion_denom = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -363,6 +371,11 @@ class GaussianModel:
         self._deformation_table = self._deformation_table[valid_points_mask]
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+        
+        # Update motion statistics tensors
+        self.motion_gradient_accum = self.motion_gradient_accum[valid_points_mask]
+        self.motion_direction_accum = self.motion_direction_accum[valid_points_mask]
+        self.motion_denom = self.motion_denom[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -410,6 +423,11 @@ class GaussianModel:
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self._deformation_accum = torch.zeros((self.get_xyz.shape[0], 3), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        
+        self.motion_gradient_accum = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.motion_direction_accum = torch.zeros((self.get_xyz.shape[0], 3), device="cuda")
+        self.motion_denom = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
     def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
@@ -438,6 +456,81 @@ class GaussianModel:
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_deformation_table)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+        self.prune_points(prune_filter)
+        
+    def densify_and_split_motion_aware(self, grads_rgb, grads_motion, motion_dirs,
+                                    grad_threshold_rgb, grad_threshold_motion,
+                                    scene_extent, motion_weight=0.3, N=2):
+        n_init_points = self.get_xyz.shape[0]
+
+        # Handle size mismatches robustly (pad or truncate as needed)
+        padded_grad_rgb = torch.zeros((n_init_points), device="cuda")
+        min_size_rgb = min(n_init_points, grads_rgb.shape[0])
+        padded_grad_rgb[:min_size_rgb] = grads_rgb.squeeze()[:min_size_rgb]
+        rgb_mask = padded_grad_rgb >= grad_threshold_rgb
+        
+        padded_grad_motion = torch.zeros((n_init_points), device="cuda")
+        min_size_motion = min(n_init_points, grads_motion.shape[0])
+        padded_grad_motion[:min_size_motion] = grads_motion.squeeze()[:min_size_motion]
+        motion_mask = padded_grad_motion >= grad_threshold_motion
+        
+        # Pad or truncate motion directions
+        padded_motion_dirs = torch.zeros((n_init_points, 3), device="cuda")
+        min_size_dirs = min(n_init_points, motion_dirs.shape[0])
+        padded_motion_dirs[:min_size_dirs] = motion_dirs[:min_size_dirs]
+        
+        selected_pts_mask = rgb_mask | motion_mask
+        
+        selected_pts_mask = torch.logical_and(
+            selected_pts_mask,
+            torch.max(self.get_scaling, dim=1).values > self.percent_dense * scene_extent
+        )
+        
+        if not selected_pts_mask.any():
+            return
+        
+        num_selected = selected_pts_mask.sum().item()
+        print(f"[Motion-Aware Split] Selected {num_selected} gaussians "
+            f"(RGB: {rgb_mask.sum()}, Motion: {motion_mask.sum()}, Union: {(rgb_mask | motion_mask).sum()})")
+        
+        motion_dir = padded_motion_dirs[selected_pts_mask]  # [M, 3]
+        
+        motion_norm = torch.norm(motion_dir, dim=-1)
+        has_motion = motion_norm > 0.01 
+        
+        scales = self.get_scaling[selected_pts_mask]  # [M, 3]
+        rots = build_rotation(self._rotation[selected_pts_mask])  # [M, 3, 3]
+        
+        new_xyz_list = []
+        for i in range(N):
+            isotropic_noise = torch.randn(num_selected, 3, device="cuda") * scales * 0.3
+            
+            motion_bias = torch.zeros(num_selected, 3, device="cuda")
+            if has_motion.any():
+                motion_bias[has_motion] = motion_dir[has_motion] * scales[has_motion].mean(dim=-1, keepdim=True) * motion_weight
+
+            offset_local = isotropic_noise + motion_bias * (2 * i / (N - 1) - 1) if N > 1 else isotropic_noise
+            
+            offset_world = (rots @ offset_local.unsqueeze(-1)).squeeze(-1)
+            
+            new_xyz_list.append(self.get_xyz[selected_pts_mask] + offset_world)
+        
+        new_xyz = torch.cat(new_xyz_list, dim=0)
+        
+        new_scaling = self.scaling_inverse_activation(scales.repeat(N, 1) / (0.8 * N))
+        new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
+        new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
+        new_deformation_table = self._deformation_table[selected_pts_mask].repeat(N)
+        
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest,
+                                new_opacity, new_scaling, new_rotation, new_deformation_table)
+        
+        prune_filter = torch.cat((
+            selected_pts_mask,
+            torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)
+        ))
         self.prune_points(prune_filter)
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent, density_threshold=20, displacement_scale=20, model_path=None, iteration=None, stage=None):
@@ -512,10 +605,10 @@ class GaussianModel:
         opacity = self._opacity.detach()
         shs = self.get_features.detach()
         
-        control_dim = getattr(self._deformation.control_encoder, 'input_dim', 6)
-        control_vec = torch.zeros(means3D.shape[0], control_dim).to("cuda")
+        action_dim = getattr(self._deformation.action_encoder, 'input_dim', 6)
+        action_vec = torch.zeros(means3D.shape[0], action_dim).to("cuda")
         
-        means3D_deform, scales_deform, rotations_deform, _, _ = self._deformation(means3D, scales, rotations, opacity, shs, control_vec)
+        means3D_deform, scales_deform, rotations_deform, _, _ = self._deformation(means3D, scales, rotations, opacity, shs, action_vec)
         position_error = (means3D_deform - means3D)**2
         rotation_error = (rotations_deform - rotations)**2 
         scaling_erorr = (scales_deform - scales)**2
@@ -525,6 +618,25 @@ class GaussianModel:
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+        
+    def add_motion_densification_stats(self, motion_magnitude, motion_direction, update_filter):
+        # Check size consistency
+        current_size = self.motion_gradient_accum.shape[0]
+        mag_size = motion_magnitude.shape[0]
+        dir_size = motion_direction.shape[0]
+        filter_size = update_filter.shape[0]
+        
+        if current_size != mag_size or current_size != dir_size or current_size != filter_size:
+            print(f"[Motion Stats] Warning: Size mismatch detected - skipping motion stats update")
+            print(f"  Current Gaussians: {current_size}")
+            print(f"  Motion magnitude: {mag_size}, Direction: {dir_size}, Filter: {filter_size}")
+            print(f"  This usually happens when Gaussians are modified during training.")
+            return
+        
+        self.motion_gradient_accum[update_filter] += motion_magnitude[update_filter]
+        self.motion_direction_accum[update_filter] += motion_direction[update_filter]
+        self.motion_denom[update_filter] += 1  
+
     @torch.no_grad()
     def update_deformation_table(self,threshold):
         # print("origin deformation point nums:",self._deformation_table.sum())

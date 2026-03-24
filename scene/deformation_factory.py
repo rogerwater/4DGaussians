@@ -52,20 +52,20 @@ def get_network_info(args) -> dict:
     use_triplane = getattr(args, 'use_triplane', False)
     
     if use_triplane:
-        control_dim = getattr(args, 'control_input_dim', 6)
-        use_pe = getattr(args, 'control_use_pe', True)
-        num_freq = getattr(args, 'control_num_frequencies', 4)
-        control_output = getattr(args, 'control_output_dim', None)
+        action_dim = getattr(args, 'action_input_dim', 6)
+        use_pe = getattr(args, 'action_use_pe', True)
+        num_freq = getattr(args, 'action_num_frequencies', 4)
+        action_output = getattr(args, 'action_output_dim', None)
         
         if use_pe:
-            pe_dim = control_dim * (1 + 2 * num_freq)
+            pe_dim = action_dim * (1 + 2 * num_freq)
         else:
-            pe_dim = control_dim
+            pe_dim = action_dim
         
-        if control_output is not None:
-            control_feat_dim = control_output
+        if action_output is not None:
+            action_feat_dim = action_output
         else:
-            control_feat_dim = pe_dim
+            action_feat_dim = pe_dim
         
         resolution = args.kplanes_config.get('resolution', [64, 64, 64])[:3]
         out_dim = args.kplanes_config.get('output_coordinate_dim', 32)
@@ -79,10 +79,10 @@ def get_network_info(args) -> dict:
             'resolution': resolution,
             'num_scales': num_scales,
             'spatial_feat_dim': spatial_feat_dim,
-            'control_input_dim': control_dim,
-            'control_feat_dim': control_feat_dim,
-            'total_decoder_input': spatial_feat_dim + control_feat_dim,
-            'control_compression': 'None (direct injection)',
+            'action_input_dim': action_dim,
+            'action_feat_dim': action_feat_dim,
+            'total_decoder_input': spatial_feat_dim + action_feat_dim,
+            'action_compression': 'None (direct injection)',
         }
     else:
         resolution = args.kplanes_config.get('resolution', [64, 64, 64, 25])
@@ -96,10 +96,10 @@ def get_network_info(args) -> dict:
             'resolution': resolution,
             'num_scales': num_scales,
             'spatial_feat_dim': out_dim * num_scales,
-            'control_input_dim': getattr(args, 'control_input_dim', 6),
-            'control_feat_dim': 1,
+            'action_input_dim': getattr(args, 'action_input_dim', 6),
+            'action_feat_dim': 1,
             'total_decoder_input': out_dim * num_scales,
-            'control_compression': '6D -> 1D (potential information loss)',
+            'action_compression': '6D -> 1D (potential information loss)',
         }
 
 

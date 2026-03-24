@@ -3,7 +3,7 @@
 # 
 # This module implements a TriPlane (3 planes: XY, XZ, YZ) for spatial feature encoding.
 # Unlike HexPlane which includes time-space planes, TriPlane only encodes spatial geometry.
-# Control signals are injected directly into the decoder for better expressiveness.
+# Action signals are injected directly into the decoder for better expressiveness.
 #
 
 import itertools
@@ -143,7 +143,7 @@ class TriPlaneField(nn.Module):
     
     Unlike HexPlane which includes 6 planes (XY, XZ, YZ, XT, YT, ZT),
     TriPlane only uses 3 spatial planes (XY, XZ, YZ) for geometry encoding.
-    Control signals are handled separately by the decoder.
+    Action signals are handled separately by the decoder.
     
     Architecture:
         Input: 3D position (x, y, z)
@@ -249,15 +249,15 @@ class TriPlaneField(nn.Module):
         return self.get_spatial_features(pts)
 
 
-class ControlProcessor(nn.Module):
+class ActionProcessor(nn.Module):
     """
-    Process control signals with optional positional encoding.
+    Process action signals with optional positional encoding.
     
-    This module prepares control vectors for injection into the decoder.
-    Unlike ControlEncoder which compresses to 1D, this preserves dimensionality.
+    This module prepares action vectors for injection into the decoder.
+    Unlike ActionEncoder which compresses to 1D, this preserves dimensionality.
     
     Args:
-        input_dim: Control vector dimension (e.g., 6 for 6-DOF)
+        input_dim: Action vector dimension (e.g., 6 for 6-DOF)
         use_pe: Whether to use positional encoding
         num_frequencies: Number of frequency bands for PE
         hidden_dim: Optional MLP hidden dimension for feature extraction
@@ -308,7 +308,7 @@ class ControlProcessor(nn.Module):
             
         self._init_weights()
         
-        print(f"[ControlProcessor] Input: {input_dim} → PE: {pe_dim} → MLP → Output: {output_dim}")
+        print(f"[ActionProcessor] Input: {input_dim} → PE: {pe_dim} → MLP → Output: {output_dim}")
     
     def _init_weights(self):
         for m in self.modules():
@@ -329,18 +329,18 @@ class ControlProcessor(nn.Module):
         
         return torch.cat(encoded, dim=-1)
     
-    def forward(self, control_vec: torch.Tensor) -> torch.Tensor:
+    def forward(self, action_vec: torch.Tensor) -> torch.Tensor:
         """
-        Process control vector.
+        Process action vector.
         
         Args:
-            control_vec: [N, input_dim]
+            action_vec: [N, input_dim]
             
         Returns:
             Processed features [N, output_dim]
         """
         # Apply positional encoding
-        x = self.positional_encoding(control_vec)
+        x = self.positional_encoding(action_vec)
         x = self.mlp(x)
         
         return x

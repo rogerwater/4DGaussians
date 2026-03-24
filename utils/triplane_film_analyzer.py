@@ -32,7 +32,7 @@ class TriPlaneFiLMAnalyzer:
     
     主要功能:
     1. 分析TriPlane的空间表征能力
-    2. 评估ControlProcessor的action编码质量
+    2. 评估ActionProcessor的action编码质量
     3. 监控FiLM调制的有效性
     4. 可视化action在特征空间的分布
     5. 分析spatial-action跨模态融合效果
@@ -76,13 +76,13 @@ class TriPlaneFiLMAnalyzer:
             inner_net = deformation_net
         
         self.triplane = inner_net.triplane
-        self.control_processor = inner_net.control_processor
+        self.action_processor = inner_net.action_processor
         self.film_decoder = inner_net.film_decoder
         
         # 采样配置
         self.num_pos = num_sample_positions
         self.num_actions = num_sample_actions
-        self.action_dim = action_dim or getattr(config, 'control_input_dim', 15)
+        self.action_dim = action_dim or getattr(config, 'action_input_dim', 15)
         
         # 可视化配置
         self.enable_tsne = enable_tsne
@@ -156,7 +156,7 @@ class TriPlaneFiLMAnalyzer:
     
     def analyze_action_encoding(self) -> Dict:
         """
-        分析ControlProcessor的action编码质量
+        分析ActionProcessor的action编码质量
         
         重点评估:
         1. Action separability - 不同action的可分性
@@ -172,9 +172,9 @@ class TriPlaneFiLMAnalyzer:
         # 1. 采样action空间
         actions = self._sample_actions(self.num_actions)
         
-        # 2. 通过ControlProcessor编码
+        # 2. 通过ActionProcessor编码
         with torch.no_grad():
-            action_features = self.control_processor(actions)  # [N, control_dim]
+            action_features = self.action_processor(actions)  # [N, action_dim]
         
         # 3. 计算action separability
         action_features_norm = F.normalize(action_features, dim=1)
@@ -249,10 +249,10 @@ class TriPlaneFiLMAnalyzer:
         positions = self._sample_positions(num_samples)
         actions = self._sample_actions(num_samples)
         
-        # 2. 获取空间特征和控制特征
+        # 2. 获取空间特征和动作特征
         with torch.no_grad():
             spatial_feat = self.triplane(positions)
-            control_feat = self.control_processor(actions)
+            action_feat = self.action_processor(actions)
         
         # 3. 逐层分析FiLM调制
         gamma_stats = []
@@ -274,7 +274,7 @@ class TriPlaneFiLMAnalyzer:
                 h_before = film_block.norm(h_before)
                 
                 # 生成γ和β
-                film_params = film_layer.film_generator(control_feat)
+                film_params = film_layer.film_generator(action_feat)
                 gamma = film_params[:, :film_layer.feature_dim]
                 beta = film_params[:, film_layer.feature_dim:]
             
@@ -335,14 +335,14 @@ class TriPlaneFiLMAnalyzer:
             actions = actions.clone().requires_grad_(True)
             
             spatial_feat = self.triplane(positions)
-            control_feat = self.control_processor(actions)
+            action_feat = self.action_processor(actions)
             
             contributions = []
             h = spatial_feat
             num_layers = len(self.film_decoder.film_blocks)
             
             for idx, film_block in enumerate(self.film_decoder.film_blocks):
-                h_out = film_block(h, control_feat)
+                h_out = film_block(h, action_feat)
                 
                 # 计算输出对输入的梯度
                 output_sum = h_out.sum()
@@ -389,13 +389,13 @@ class TriPlaneFiLMAnalyzer:
         # 2. 提取特征
         with torch.no_grad():
             spatial_feats = self.triplane(positions)           # [50, 96]
-            action_feats = self.control_processor(actions)     # [50, 32]
+            action_feats = self.action_processor(actions)     # [50, 32]
         
         # 3. 计算Pearson相关系数
         spatial_norm = (spatial_feats - spatial_feats.mean(0)) / (spatial_feats.std(0) + 1e-6)
         action_norm = (action_feats - action_feats.mean(0)) / (action_feats.std(0) + 1e-6)
         
-        # 相关性矩阵 [spatial_dim, control_dim]
+        # 相关性矩阵 [spatial_dim, action_dim]
         correlation_matrix = torch.mm(spatial_norm.t(), action_norm) / n_pos
         mean_abs_corr = correlation_matrix.abs().mean().item()
         
@@ -415,7 +415,7 @@ class TriPlaneFiLMAnalyzer:
         
         with torch.no_grad():
             spatial_grid = self.triplane(pos_grid)
-            action_grid = self.control_processor(act_grid)
+            action_grid = self.action_processor(act_grid)
             fused_feats = self.film_decoder(spatial_grid, action_grid)
         
         # 分析融合后的特征
@@ -793,6 +793,6 @@ class TriPlaneFiLMAnalyzer:
     def _sample_actions(self, num_samples: int) -> torch.Tensor:
         """采样动作向量"""
         # 使用均匀分布采样，假设action归一化在[-π, π]范围
-        # 如果实际范围不同，会通过ControlProcessor的编码器适应
+        # 如果实际范围不同，会通过ActionProcessor的编码器适应
         actions = (torch.rand(num_samples, self.action_dim, device=self.device) * 2 - 1) * 3.0
         return actions

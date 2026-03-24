@@ -28,13 +28,13 @@ ModelHiddenParams = dict(
     net_width = 128,      # Hidden dimension
     grid_pe = 0,          # Positional encoding on grid features (0 = disabled)
     
-    # ========== Control Signal Configuration ==========
-    control_input_dim = 15,         # Input control dimension (e.g., 6-DOF)
-    control_use_pe = False,         # Use positional encoding for control
-    control_num_frequencies = 4,   # PE frequency bands
-    control_hidden_dim = 128,       # Hidden dim for control MLP (if used)
-    control_output_dim = 32,     # None = use PE output directly (recommended)
-                                   # Set to a value (e.g., 32) to project control features
+    # ========== Action Signal Configuration ==========
+    action_input_dim = 15,         # Input action dimension (e.g., joint/action state)
+    action_use_pe = False,         # Use positional encoding for action
+    action_num_frequencies = 4,    # PE frequency bands
+    action_hidden_dim = 128,       # Hidden dim for action MLP (if used)
+    action_output_dim = 32,        # None = use PE output directly (recommended)
+                                  # Set to a value (e.g., 32) to project action features
     
     # ========== FiLM Fusion Configuration (NEW) ==========
     film_hidden_dim = 128,          # Hidden dim for FiLM γ/β generation
@@ -71,13 +71,14 @@ ModelHiddenParams = dict(
 
 OptimizationParams = dict(
     dataloader = True,
-    iterations = 20000,
+    iterations = 25000,
     zerostamp_init = False,
     batch_size = 4,
     coarse_iterations = 3000,
-    densify_until_iter = 5000,
+    densify_until_iter = 6000,
     densification_interval = 100,
     opacity_reset_interval = 2000,
+    flow_start_iter = 4000,
 
     lambda_dssim = 0.2,
     lambda_lpips = 0.0,
@@ -86,5 +87,5 @@ OptimizationParams = dict(
     depth_scale = 1000.0,
 
     use_gmflow = True,
-    flow_loss_weight = 1.0,
+    flow_loss_weight = 0.05,
 )

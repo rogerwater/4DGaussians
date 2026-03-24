@@ -17,7 +17,7 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
                  image_name, uid,
-                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", time = 0, control_vec = None,
+                 trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", time = 0, action_vec = None,
                  mask = None, camera_idx = 0, depth = None, sample_idx = 0
                  ):
         super(Camera, self).__init__()
@@ -33,15 +33,15 @@ class Camera(nn.Module):
         self.camera_idx = camera_idx
         self.sample_idx = sample_idx
         
-        if control_vec is not None:
-            if isinstance(control_vec, np.ndarray):
-                self.control_vec = torch.from_numpy(control_vec).float()
-            elif isinstance(control_vec, torch.Tensor):
-                self.control_vec = control_vec.float()
+        if action_vec is not None:
+            if isinstance(action_vec, np.ndarray):
+                self.action_vec = torch.from_numpy(action_vec).float()
+            elif isinstance(action_vec, torch.Tensor):
+                self.action_vec = action_vec.float()
             else:
-                self.control_vec = torch.tensor(control_vec, dtype=torch.float32)
+                self.action_vec = torch.tensor(action_vec, dtype=torch.float32)
         else:
-            self.control_vec = torch.zeros(6, dtype=torch.float32)
+            self.action_vec = torch.zeros(6, dtype=torch.float32)
         
         try:
             self.data_device = torch.device(data_device)
@@ -77,7 +77,7 @@ class Camera(nn.Module):
         self.camera_center = self.world_view_transform.inverse()[3, :3]
 
 class MiniCam:
-    def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform, time, control_vec=None):
+    def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform, time, action_vec=None):
         self.image_width = width
         self.image_height = height    
         self.FoVy = fovy
@@ -90,7 +90,7 @@ class MiniCam:
         self.camera_center = view_inv[3][:3]
         self.time = time
         
-        if control_vec is not None:
-            self.control_vec = control_vec
+        if action_vec is not None:
+            self.action_vec = action_vec
         else:
-            self.control_vec = torch.zeros(6, dtype=torch.float32)
+            self.action_vec = torch.zeros(6, dtype=torch.float32)

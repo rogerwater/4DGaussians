@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 from utils.graphics_utils import apply_rotation, batch_quaternion_multiply
-from scene.control_encoder import ControlEncoder, create_control_encoder
+from scene.action_encoder import ActionEncoder, create_action_encoder
 from scene.hexplane import HexPlaneField
 from scene.grid import DenseGrid
 # from scene.grid import HashHexPlane
@@ -80,13 +80,13 @@ class Deformation(nn.Module):
         self.opacity_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 1))
         self.shs_deform = nn.Sequential(nn.ReLU(),nn.Linear(self.W,self.W),nn.ReLU(),nn.Linear(self.W, 16*3))
 
-    def query_control(self, rays_pts_emb, scales_emb, rotations_emb, time_feature, control_latent):
+    def query_action(self, rays_pts_emb, scales_emb, rotations_emb, time_feature, action_latent):
 
         if self.no_grid:
-            h = torch.cat([rays_pts_emb[:,:3],control_latent[:,:1]],-1)
+            h = torch.cat([rays_pts_emb[:,:3],action_latent[:,:1]],-1)
         else:
 
-            grid_feature = self.grid(rays_pts_emb[:,:3], control_latent[:,:1])
+            grid_feature = self.grid(rays_pts_emb[:,:3], action_latent[:,:1])
             # breakpoint()
             if self.grid_pe > 1:
                 grid_feature = poc_fre(grid_feature,self.grid_pe)
@@ -100,19 +100,19 @@ class Deformation(nn.Module):
     def get_empty_ratio(self):
         return self.ratio
     
-    def forward(self, rays_pts_emb, scales_emb=None, rotations_emb=None, opacity = None,shs_emb=None, time_feature=None, control_latent=None):
-        if control_latent is None:
+    def forward(self, rays_pts_emb, scales_emb=None, rotations_emb=None, opacity = None,shs_emb=None, time_feature=None, action_latent=None):
+        if action_latent is None:
             return self.forward_static(rays_pts_emb[:,:3])
         else:
-            return self.forward_dynamic(rays_pts_emb, scales_emb, rotations_emb, opacity, shs_emb, time_feature, control_latent)
+            return self.forward_dynamic(rays_pts_emb, scales_emb, rotations_emb, opacity, shs_emb, time_feature, action_latent)
 
     def forward_static(self, rays_pts_emb):
         grid_feature = self.grid(rays_pts_emb[:,:3])
         dx = self.static_mlp(grid_feature)
         return rays_pts_emb[:, :3] + dx
 
-    def forward_dynamic(self, rays_pts_emb, scales_emb, rotations_emb, opacity_emb, shs_emb, time_feature, control_latent):
-        hidden = self.query_control(rays_pts_emb, scales_emb, rotations_emb, time_feature, control_latent)
+    def forward_dynamic(self, rays_pts_emb, scales_emb, rotations_emb, opacity_emb, shs_emb, time_feature, action_latent):
+        hidden = self.query_action(rays_pts_emb, scales_emb, rotations_emb, time_feature, action_latent)
         if self.args.static_mlp:
             mask = self.static_mlp(hidden)
         elif self.args.empty_voxel:
@@ -190,14 +190,14 @@ class deform_network(nn.Module):
         timenet_output = args.timenet_output  # [DEPRECATED] kept for Deformation init but unused
         grid_pe = args.grid_pe
         
-        # [DEPRECATED] Original time encoder, replaced by control_encoder
+        # [DEPRECATED] Original time encoder, replaced by action_encoder
         # times_ch = 2*timebase_pe+1
         # self.timenet = nn.Sequential(
         # nn.Linear(times_ch, timenet_width), nn.ReLU(),
         # nn.Linear(timenet_width, timenet_output))
         
-        # Control vector encoder: [N, control_dim] -> [N, 1]
-        self.control_encoder = create_control_encoder(args)
+        # Action vector encoder: [N, action_dim] -> [N, 1]
+        self.action_encoder = create_action_encoder(args)
         
         # Note: input_ch_time=timenet_output is a legacy parameter that is no longer used
         self.deformation_net = Deformation(W=net_width, D=defor_depth, input_ch=(3)+(3*(posbase_pe))*2, grid_pe=grid_pe, input_ch_time=timenet_output, args=args)
@@ -209,17 +209,17 @@ class deform_network(nn.Module):
         self.apply(initialize_weights)
         # print(self)
 
-    def forward(self, point, scales=None, rotations=None, opacity=None, shs=None, control_vec=None):
+    def forward(self, point, scales=None, rotations=None, opacity=None, shs=None, action_vec=None):
         """
         Args:
             point: [N, 3] - Spatial coordinates
             scales, rotations, opacity, shs: Gaussian attributes  
-            control_vec: [N, control_dim] - Control vectors (e.g., 6D joint angles)
+            action_vec: [N, action_dim] - Action vectors (e.g., 6D joint angles)
         """
-        if control_vec is None:
+        if action_vec is None:
             return self.forward_static(point)
         else:
-            return self.forward_dynamic(point, scales, rotations, opacity, shs, control_vec)
+            return self.forward_dynamic(point, scales, rotations, opacity, shs, action_vec)
     
     @property
     def get_aabb(self):
@@ -233,14 +233,14 @@ class deform_network(nn.Module):
         points = self.deformation_net(points)
         return points
     
-    def forward_dynamic(self, point, scales=None, rotations=None, opacity=None, shs=None, control_vec=None):
+    def forward_dynamic(self, point, scales=None, rotations=None, opacity=None, shs=None, action_vec=None):
         """
-        Dynamic deformation using control vectors
+        Dynamic deformation using action vectors
         
         Args:
             point: [N, 3]
             scales, rotations, opacity, shs: Gaussian attributes
-            control_vec: [N, control_dim] - Control vector (6D by default)
+            action_vec: [N, action_dim] - Action vector (6D by default)
             
         Returns:
             means3D, scales, rotations, opacity, shs
@@ -252,7 +252,7 @@ class deform_network(nn.Module):
         # time_emb = poc_fre(times_sel, self.time_poc)
         # times_feature = self.timenet(time_emb)
         
-        control_latent = self.control_encoder(control_vec) # [N, 6] -> [N, 1]
+        action_latent = self.action_encoder(action_vec) # [N, 6] -> [N, 1]
         
         means3D, scales, rotations, opacity, shs = self.deformation_net( point_emb,
                                             scales_emb,
@@ -260,12 +260,12 @@ class deform_network(nn.Module):
                                             opacity,
                                             shs,
                                             None,
-                                            control_latent)
+                                            action_latent)
                 
         return means3D, scales, rotations, opacity, shs
 
     def get_mlp_parameters(self):
-        return self.deformation_net.get_mlp_parameters() + list(self.control_encoder.parameters())
+        return self.deformation_net.get_mlp_parameters() + list(self.action_encoder.parameters())
 
     def get_grid_parameters(self):
         return self.deformation_net.get_grid_parameters()

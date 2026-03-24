@@ -34,9 +34,9 @@ import copy
 from gmflow.gmflow import build_gmflow
 from gmflow.config import get_cfg as get_gmflow_cfg
 from utils.flow_utils import calculate_gs_flow, flow_to_image
-from utils.feature_analyzer import HexPlaneAnalyzer
 from utils.triplane_film_analyzer import TriPlaneFiLMAnalyzer
 
+from utils.motion_utils import lift_flow_to_3d, compute_motion_gradients_from_3d
 
 to8b = lambda x : (255*np.clip(x.cpu().numpy(),0,1)).astype(np.uint8)
 
@@ -116,22 +116,6 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
     final_iter = train_iter
     
     # Initialize Feature Analyzer for fine stage
-    """
-    feature_analyzer = None
-    if stage == "fine" and hasattr(gaussians, '_deformation'):
-        try:
-            feature_analyzer = HexPlaneAnalyzer(
-                deformation_net=gaussians._deformation,
-                config=hyper,
-                num_sample_positions=2000,
-                num_sample_controls=50,
-                enable_tsne=False  # t-SNE很慢，默认关闭
-            )
-            print("[FeatureAnalyzer] Initialized successfully for fine stage")
-        except Exception as e:
-            print(f"[FeatureAnalyzer] Failed to initialize: {e}")
-            feature_analyzer = None
-    """
     feature_analyzer = None
     if stage == "fine" and hasattr(gaussians, '_deformation'):
         try:
@@ -279,7 +263,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
         
         for viewpoint_cam in viewpoint_cams:
             # render_pkg = render(viewpoint_cam, gaussians, pipe, background, stage=stage,cam_type=scene.dataset_type)
-            render_pkg = render(viewpoint_cam, gaussians, pipe, background, stage=stage, cam_type=scene.dataset_type, is_training=True, iteration=iteration)
+            render_pkg = render(viewpoint_cam, gaussians, pipe, background, stage=stage, cam_type=scene.dataset_type, is_training=False, iteration=iteration)
             image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
             
             images.append(image.unsqueeze(0))
@@ -348,7 +332,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
             loss += tv_loss
         if opt.lambda_dssim != 0:
             ssim_loss = ssim(image_tensor,gt_image_tensor)
-            loss += opt.lambda_dssim * (1.0-ssim_loss)
+            loss += opt.lambda_dssim * (1.0 - ssim_loss)
         # if opt.lambda_lpips !=0:
         #     lpipsloss = lpips_loss(image_tensor,gt_image_tensor,lpips_model)
         #     loss += opt.lambda_lpips * lpipsloss
@@ -396,6 +380,10 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 H, W = gt_image_tensor.shape[-2], gt_image_tensor.shape[-1]
                 flow_losses = []
                 
+                motion_magnitude_batch = torch.zeros(gaussians.get_xyz.shape[0], device="cuda")
+                motion_direction_batch = torch.zeros(gaussians.get_xyz.shape[0], 3, device="cuda")
+                motion_valid_count = 0
+                
                 flow_idx = 0
                 for batch_idx, viewpoint_cam in enumerate(viewpoint_cams):
                     if not valid_flow_mask[batch_idx]:
@@ -419,19 +407,28 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                             flow_2d_gt[1] *= float(H) / float(H_flow)
                         flow_2d_gt = flow_2d_gt.cuda()
                         
-                    # 2. get control_vec of next frame
+                    # 2. get action_vec of next frame
                     next_uid = uid_to_next_uid[viewpoint_cam.uid]
                     next_cam = uid_to_camera[next_uid]
-                    next_control_vec = next_cam.control_vec
+                    next_action_vec = next_cam.action_vec
                     
-                    # 3. render with control_vec of next frame
-                    with torch.no_grad():
+                    # 3. render with action_vec of next frame
+                    enable_flow_gradient = (iteration >= opt.flow_start_iter)
+                    
+                    if enable_flow_gradient:
                         render_next = render(viewpoint_cam, gaussians, pipe, background, 
                                             stage=stage, cam_type=scene.dataset_type,
                                             is_training=False,
-                                            override_control_vec=next_control_vec)
-                        next_proj_2D = render_next["proj_2D"]
-                        next_conic_2D = render_next["conic_2D"]
+                                            override_action_vec=next_action_vec)
+                    else:
+                        with torch.no_grad():
+                            render_next = render(viewpoint_cam, gaussians, pipe, background, 
+                                                stage=stage, cam_type=scene.dataset_type,
+                                                is_training=False,
+                                                override_action_vec=next_action_vec)
+                    
+                    next_proj_2D = render_next["proj_2D"]
+                    next_conic_2D = render_next["conic_2D"]
                     
                     # 4. calculate gs flow
                     gs_flow = calculate_gs_flow(
@@ -452,11 +449,81 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                     flow_loss_val = flow_loss(gs_flow, flow_2d_gt.detach(), H, W)
                     flow_losses.append(flow_loss_val)
                     
+                    gt_depth_t = viewpoint_cam.depth
+                    gt_depth_t1 = next_cam.depth
+                    
+                    if gt_depth_t is not None and gt_depth_t1 is not None:
+                        try:
+                            gt_depth_t = gt_depth_t.cuda().squeeze(0) / opt.depth_scale
+                            gt_depth_t1 = gt_depth_t1.cuda().squeeze(0) / opt.depth_scale
+                            
+                            motion_3d, valid_mask = lift_flow_to_3d(
+                                flow_2d_gt, gt_depth_t, gt_depth_t1,
+                                viewpoint_cam, next_cam
+                            )
+                            
+                            motion_mag, motion_dir = compute_motion_gradients_from_3d(
+                                gaussians.get_xyz,
+                                motion_3d,
+                                valid_mask,
+                                gs_per_pixel_list[flow_idx],
+                                weight_per_gs_pixel_list[flow_idx]
+                            )
+                            
+                            motion_magnitude_batch += motion_mag
+                            motion_direction_batch += motion_dir
+                            motion_valid_count += 1
+                            
+                        except Exception as e:
+                            print(f"[Motion] Warning: Failed to compute motion for view {viewpoint_cam.uid}: {e}")
+                    
                     flow_idx += 1
                 
                 if len(flow_losses) > 0:
-                    Lflow = torch.stack(flow_losses).mean()
-                    loss = loss + opt.flow_loss_weight * Lflow
+                    Lflow = torch.stack(flow_losses).mean()                    
+                    
+                    if iteration < opt.flow_start_iter:
+                        flow_weight = 0.0
+                    elif iteration < opt.densify_until_iter:
+                        progress = (iteration - opt.flow_start_iter) / (opt.densify_until_iter - opt.flow_start_iter)
+                        flow_weight = opt.flow_loss_weight * 0.5 * progress
+                    else:
+                        rampup_iters = 2000
+                        progress = min((iteration - opt.densify_until_iter) / rampup_iters, 1.0)
+                        flow_weight = opt.flow_loss_weight * (0.5 + 0.5 * progress)
+                    
+                    loss = loss + flow_weight * Lflow
+                    
+                    if tb_writer and iteration % 100 == 0:
+                        tb_writer.add_scalar(f'{stage}/flow/weight', flow_weight, iteration)
+                        tb_writer.add_scalar(f'{stage}/flow/raw_loss', Lflow.item(), iteration)
+                
+                if motion_valid_count > 0:
+                    motion_magnitude_batch = motion_magnitude_batch / motion_valid_count
+                    motion_direction_batch = motion_direction_batch / motion_valid_count
+                    
+                    visibility_filter_combined = torch.cat(visibility_filter_list, dim=0).any(dim=0)
+                    
+                    # Debug: check sizes
+                    if visibility_filter_combined.shape[0] != gaussians.motion_gradient_accum.shape[0]:
+                        print(f"[Motion Stats] Size mismatch detected at iteration {iteration}:")
+                        print(f"  Current Gaussians: {gaussians.get_xyz.shape[0]}")
+                        print(f"  motion_gradient_accum: {gaussians.motion_gradient_accum.shape[0]}")
+                        print(f"  motion_magnitude_batch: {motion_magnitude_batch.shape[0]}")
+                        print(f"  visibility_filter_combined: {visibility_filter_combined.shape[0]}")
+                        print(f"  visibility_filter_list length: {len(visibility_filter_list)}")
+                        if len(visibility_filter_list) > 0:
+                            print(f"  visibility_filter_list[0] shape: {visibility_filter_list[0].shape}")
+                    
+                    gaussians.add_motion_densification_stats(
+                        motion_magnitude_batch,
+                        motion_direction_batch,
+                        visibility_filter_combined
+                    )
+                    
+                    if tb_writer and iteration % 100 == 0:
+                        avg_motion = motion_magnitude_batch[visibility_filter_combined].mean().item() if visibility_filter_combined.any() else 0.0
+                        tb_writer.add_scalar(f'{stage}/motion/avg_magnitude', avg_motion, iteration)
              
                     
         loss.backward()
@@ -483,7 +550,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
 
             # Log and save
             timer.pause()
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type, 
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, [pipe, background], stage, scene.dataset_type, opt, flownet,
                             gs_flow_list, flow_2d_gt_list, flow_viewpoint_list, L_depth=L_depth, Lflow=Lflow)
             if (iteration in saving_iterations):
                 print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -507,6 +574,67 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                     # total_images.append(to8b(temp_image).transpose(1,2,0))
             timer.start()
             # Densification
+            if iteration < opt.densify_until_iter:
+                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                gaussians.add_densification_stats(viewspace_point_tensor_grad, visibility_filter)
+                
+                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    
+                    if stage == "fine" and getattr(opt, 'use_motion_densification', False):
+                        grads_rgb = gaussians.xyz_gradient_accum / gaussians.denom
+                        grads_rgb[grads_rgb.isnan()] = 0.0
+                        
+                        grads_motion = gaussians.motion_gradient_accum / (gaussians.motion_denom + 1e-7)
+                        grads_motion[grads_motion.isnan()] = 0.0
+                        
+                        motion_dirs = gaussians.motion_direction_accum / (gaussians.motion_denom.unsqueeze(-1) + 1e-7)
+                        motion_dirs = motion_dirs / (torch.norm(motion_dirs, dim=-1, keepdim=True) + 1e-7)
+                        
+                        # Debug: log sizes before densification
+                        n_gaussians_before = gaussians.get_xyz.shape[0]
+                        
+                        gaussians.densify_and_clone(
+                            grads_rgb, 
+                            opt.densify_grad_threshold,
+                            scene.cameras_extent
+                        )
+                        
+                        n_gaussians_after_clone = gaussians.get_xyz.shape[0]
+                        
+                        # Debug: check size consistency
+                        if n_gaussians_after_clone != grads_motion.shape[0] and iteration % 100 == 0:
+                            print(f"[Densification Debug] Iter {iteration}:")
+                            print(f"  Before clone: {n_gaussians_before}")
+                            print(f"  After clone: {n_gaussians_after_clone}")
+                            print(f"  grads_rgb: {grads_rgb.shape[0]}, grads_motion: {grads_motion.shape[0]}, motion_dirs: {motion_dirs.shape[0]}")
+                        
+                        gaussians.densify_and_split_motion_aware(
+                            grads_rgb,
+                            grads_motion,
+                            motion_dirs,
+                            grad_threshold_rgb=opt.densify_grad_threshold,
+                            grad_threshold_motion=opt.densify_motion_threshold,
+                            scene_extent=scene.cameras_extent,
+                            motion_weight=opt.motion_grad_weight,
+                            N=2
+                        )
+                        
+                        gaussians.prune(
+                            opt.densify_grad_threshold,  # max_grad
+                            opt.opacity_cull,            # min_opacity
+                            scene.cameras_extent,        # extent
+                            size_threshold               # max_screen_size
+                        )
+                        
+                        if iteration % 1000 == 0:
+                            print(f"[Densification] Iter {iteration}: RGB grad avg={grads_rgb.mean():.6f}, Motion grad avg={grads_motion.mean():.6f}")
+                    else:
+                        gaussians.densify(opt.densify_grad_threshold, opt.opacity_cull, scene.cameras_extent, size_threshold, 5, 5)
+                
+                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                    gaussians.reset_opacity()
+            """
             if iteration < opt.densify_until_iter :
                 # Keep track of max radii in image-space for pruning
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
@@ -534,7 +662,7 @@ def scene_reconstruction(dataset, opt, hyper, pipe, testing_iterations, saving_i
                 if iteration % opt.opacity_reset_interval == 0:
                     print("reset opacity")
                     gaussians.reset_opacity()
-                    
+            """
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer.step()
@@ -586,7 +714,7 @@ def prepare_output_and_logger(expname):
 
 
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, 
-                    renderFunc, renderArgs, stage, dataset_type, gs_flow_list=None, flow_2d_gt_list=None, flow_viewpoint_list=None,
+                    renderFunc, renderArgs, stage, dataset_type, opt, flownet=None, gs_flow_list=None, flow_2d_gt_list=None, flow_viewpoint_list=None,
                     L_depth=None, Lflow=None):
     if tb_writer:
         tb_writer.add_scalar(f'{stage}/train_loss_patches/l1_loss', Ll1.item(), iteration)
@@ -606,48 +734,22 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
 
         # Save optical flow visualizations of training viewpoints
         if gs_flow_list is not None and len(gs_flow_list) > 0 and stage == "fine":
-            flow_save_dir = os.path.join(scene.model_path, f"flow_vis_iter{iteration}")
-            os.makedirs(flow_save_dir, exist_ok=True)
-            print(f"\n[Flow Visualization] Saving {len(gs_flow_list)} training flow pairs to {flow_save_dir}")
-            
+            # Calculate average flow error for monitoring
             flow_errors = []
             for idx, (gs_flow, flow_2d_gt, viewpoint) in enumerate(zip(gs_flow_list, flow_2d_gt_list, flow_viewpoint_list)):
                 H, W = gs_flow.shape[1], gs_flow.shape[2]
+                # Normalize once for error calculation
                 gs_flow_normalized = gs_flow.clone()
-                gs_flow_normalized[0] = gs_flow[0] / W
-                gs_flow_normalized[1] = gs_flow[1] / H 
+                gs_flow_normalized[0] /= W
+                gs_flow_normalized[1] /= H
                 
                 flow_gt_normalized = flow_2d_gt.clone()
-                flow_gt_normalized[0] = flow_2d_gt[0] / W
-                flow_gt_normalized[1] = flow_2d_gt[1] / H
+                flow_gt_normalized[0] /= W
+                flow_gt_normalized[1] /= H
                 
                 flow_error = torch.abs(gs_flow_normalized - flow_gt_normalized).mean().item()
                 flow_errors.append(flow_error)
-                
-                flow_gt_vis = flow_to_image(flow_gt_normalized.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
-                gs_flow_vis = flow_to_image(gs_flow_normalized.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
-                
-                flow_diff = torch.abs(gs_flow_normalized - flow_gt_normalized) * 10
-                flow_diff_vis = flow_to_image(flow_diff.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=True)
-                
-                save_name = f"train_{viewpoint.image_name}"
-                cv2.imwrite(os.path.join(flow_save_dir, f"{save_name}_flow_gt.png"), flow_gt_vis)
-                cv2.imwrite(os.path.join(flow_save_dir, f"{save_name}_gs_flow.png"), gs_flow_vis)
-                cv2.imwrite(os.path.join(flow_save_dir, f"{save_name}_flow_diff.png"), flow_diff_vis)
-                
-                np.save(
-                    os.path.join(flow_save_dir, f"{save_name}_flow_gt.npy"),
-                    flow_2d_gt.numpy()
-                )
-                np.save(
-                    os.path.join(flow_save_dir, f"{save_name}_gs_flow.npy"),
-                    gs_flow.numpy()
-                )
-                np.save(
-                    os.path.join(flow_save_dir, f"{save_name}_gs_flow_normalized.npy"), 
-                    gs_flow_normalized.numpy()
-                )
-                
+            
             if len(flow_errors) > 0:
                 avg_error = sum(flow_errors) / len(flow_errors)
                 print(f"[Flow] Training batch flow error: {avg_error:.6f}")
@@ -655,19 +757,20 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 if tb_writer:
                     tb_writer.add_scalar(f'{stage}/flow/avg_flow_error', avg_error, iteration)
                     
-                    for viz_idx in range(min(3, len(gs_flow_list))):
+                    # Only save detailed visualizations for first 2 samples to reduce overhead
+                    for viz_idx in range(min(2, len(gs_flow_list))):
                         gs_flow = gs_flow_list[viz_idx]
                         flow_2d_gt = flow_2d_gt_list[viz_idx]
                         viewpoint = flow_viewpoint_list[viz_idx]
                         
                         H, W = gs_flow.shape[1], gs_flow.shape[2]
                         gs_flow_norm = gs_flow.clone()
-                        gs_flow_norm[0] = gs_flow[0] / W
-                        gs_flow_norm[1] = gs_flow[1] / H
+                        gs_flow_norm[0] /= W
+                        gs_flow_norm[1] /= H
                         
                         flow_gt_norm = flow_2d_gt.clone()
-                        flow_gt_norm[0] = flow_2d_gt[0] / W
-                        flow_gt_norm[1] = flow_2d_gt[1] / H
+                        flow_gt_norm[0] /= W
+                        flow_gt_norm[1] /= H
                         
                         flow_gt_vis = flow_to_image(flow_gt_norm.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=False)
                         gs_flow_vis = flow_to_image(gs_flow_norm.permute(1, 2, 0).cpu().numpy(), convert_to_bgr=False)
@@ -685,17 +788,35 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
              
         validation_configs = ({'name': 'test', 'cameras' : [scene.getTestCameras()[idx % len(scene.getTestCameras())] for idx in range(10, 5000, 299)]},
                               {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(10, 5000, 299)]})
+        
+        # Build camera mappings for flow calculation
+        test_uid_to_next_uid = build_frame_pair_index(scene.getTestCameras()) if scene.getTestCameras() else {}
+        train_uid_to_next_uid = build_frame_pair_index(scene.getTrainCameras()) if scene.getTrainCameras() else {}
+        test_uid_to_camera = {cam.uid: cam for cam in scene.getTestCameras()} if scene.getTestCameras() else {}
+        train_uid_to_camera = {cam.uid: cam for cam in scene.getTrainCameras()} if scene.getTrainCameras() else {}
                 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
+                depth_loss_sum = 0.0
+                depth_loss_count = 0
+                flow_loss_sum = 0.0
+                flow_loss_count = 0
+                
+                # Select appropriate mappings for this config
+                uid_to_next_uid = test_uid_to_next_uid if config['name'] == 'test' else train_uid_to_next_uid
+                uid_to_camera = test_uid_to_camera if config['name'] == 'test' else train_uid_to_camera
+                
                 for idx, viewpoint in enumerate(config['cameras']):
-                    image = torch.clamp(renderFunc(viewpoint, scene.gaussians,stage=stage, cam_type=dataset_type, *renderArgs)["render"], 0.0, 1.0)
+                    render_pkg = renderFunc(viewpoint, scene.gaussians, stage=stage, cam_type=dataset_type, *renderArgs)
+                    image = torch.clamp(render_pkg["render"], 0.0, 1.0)
+                    
                     if dataset_type == "PanopticSports":
                         gt_image = torch.clamp(viewpoint["image"].to("cuda"), 0.0, 1.0)
                     else:
                         gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                    
                     try:
                         if tb_writer and (idx < 5):
                             tb_writer.add_images(stage + "/"+config['name'] + "_view_{}/render".format(viewpoint.image_name), image[None], global_step=iteration)
@@ -703,17 +824,118 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                                 tb_writer.add_images(stage + "/"+config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     except:
                         pass
-                    l1_test += l1_loss(image, gt_image).mean().double()
-                    # mask=viewpoint.mask
                     
-                    psnr_test += psnr(image, gt_image, mask=None).mean().double()                 
+                    l1_test += l1_loss(image, gt_image).mean().double()
+                    psnr_test += psnr(image, gt_image, mask=None).mean().double()
+                    
+                    # Calculate depth loss if depth is available
+                    if hasattr(viewpoint, 'depth') and viewpoint.depth is not None:
+                        try:
+                            pred_depth = render_pkg.get("depth")
+                            if pred_depth is not None:
+                                gt_depth = viewpoint.depth.cuda() / opt.depth_scale if hasattr(opt, 'depth_scale') else viewpoint.depth.cuda()
+                                valid_mask = gt_depth > 0
+                                if valid_mask.sum() > 0:
+                                    depth_loss_val = depth_l1_loss(pred_depth, gt_depth, valid_mask)
+                                    depth_loss_sum += depth_loss_val.item()
+                                    depth_loss_count += 1
+                        except Exception as e:
+                            pass
+                    
+                    # Calculate flow loss only for first 5 samples to reduce computation
+                    if flownet is not None and stage == "fine" and hasattr(viewpoint, 'uid') and idx < 5:
+                        try:
+                            # Check if this frame has a next frame
+                            if viewpoint.uid not in uid_to_next_uid:
+                                continue
+                            
+                            next_uid = uid_to_next_uid[viewpoint.uid]
+                            if next_uid not in uid_to_camera:
+                                continue
+                            
+                            next_cam = uid_to_camera[next_uid]
+                            
+                            # Get ground truth images
+                            if dataset_type == "PanopticSports":
+                                next_gt_image = torch.clamp(next_cam["image"].to("cuda"), 0.0, 1.0)
+                            else:
+                                next_gt_image = torch.clamp(next_cam.original_image.to("cuda"), 0.0, 1.0)
+                            
+                            # Calculate GT flow using GMFlow
+                            with torch.no_grad():
+                                gt_image_for_flow = (gt_image * 255).unsqueeze(0)  # [1, C, H, W]
+                                next_gt_image_for_flow = (next_gt_image * 255).unsqueeze(0)  # [1, C, H, W]
+                                
+                                flow_preds = flownet(gt_image_for_flow, next_gt_image_for_flow)
+                                flow_high = flow_preds[0]
+                                H_flow, W_flow = flow_high.shape[-2:]
+                                H, W = image.shape[1], image.shape[2]
+                                
+                                if (H_flow == H) and (W_flow == W):
+                                    flow_2d_gt = flow_high.squeeze(0)  # [2, H, W]
+                                else:
+                                    flow_2d_gt = torch.nn.functional.interpolate(flow_high, size=(H, W), mode="bilinear").squeeze(0)
+                                    flow_2d_gt[0] *= float(W) / float(W_flow)
+                                    flow_2d_gt[1] *= float(H) / float(H_flow)
+                            
+                            # Get render outputs needed for flow calculation
+                            gs_per_pixel = render_pkg.get("gs_per_pixel")
+                            weight_per_gs_pixel = render_pkg.get("weight_per_gs_pixel")
+                            proj_2D = render_pkg.get("proj_2D")
+                            conic_2D = render_pkg.get("conic_2D")
+                            x_mu = render_pkg.get("x_mu")
+                            
+                            if all(v is not None for v in [gs_per_pixel, weight_per_gs_pixel, proj_2D, conic_2D, x_mu]):
+                                # Get action vector for next frame
+                                next_action_vec = next_cam.action_vec if hasattr(next_cam, 'action_vec') else None
+                                
+                                # Render with next frame's action vector
+                                with torch.no_grad():
+                                    render_next = renderFunc(viewpoint, scene.gaussians, *renderArgs,
+                                                           stage=stage, cam_type=dataset_type,
+                                                           is_training=False,
+                                                           override_action_vec=next_action_vec)
+                                
+                                next_proj_2D = render_next.get("proj_2D")
+                                next_conic_2D = render_next.get("conic_2D")
+                                
+                                if next_proj_2D is not None and next_conic_2D is not None:
+                                    # Calculate flow
+                                    conic_2D_inv = torch.inverse(conic_2D)
+                                    
+                                    gs_flow = calculate_gs_flow(
+                                        gs_per_pixel, weight_per_gs_pixel,
+                                        next_conic_2D, conic_2D_inv,
+                                        proj_2D, next_proj_2D, x_mu
+                                    )
+                                    
+                                    flow_loss_val = flow_loss(gs_flow.clone(), flow_2d_gt.clone(), H, W)
+                                    flow_loss_sum += flow_loss_val.item()
+                                    flow_loss_count += 1
+                        except Exception as e:
+                            # Silently skip failures to avoid disrupting validation
+                            pass
+                
                 psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
-                print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
-                # print("sh feature",scene.gaussians.get_features.shape)
+                l1_test /= len(config['cameras'])
+                
+                print_str = "\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test)
+                if depth_loss_count > 0:
+                    avg_depth_loss = depth_loss_sum / depth_loss_count
+                    print_str += " Depth Loss {:.6f}".format(avg_depth_loss)
+                if flow_loss_count > 0:
+                    avg_flow_loss = flow_loss_sum / flow_loss_count
+                    print_str += " Flow Loss {:.6f}".format(avg_flow_loss)
+                print(print_str)
+                
                 if tb_writer:
                     tb_writer.add_scalar(stage + "/"+config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
                     tb_writer.add_scalar(stage+"/"+config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
+                    
+                    if depth_loss_count > 0:
+                        tb_writer.add_scalar(stage + "/"+config['name'] + '/depth_loss', avg_depth_loss, iteration)
+                    if flow_loss_count > 0:
+                        tb_writer.add_scalar(stage + "/"+config['name'] + '/flow_loss', avg_flow_loss, iteration)
 
         if tb_writer:
             tb_writer.add_histogram(f"{stage}/scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
@@ -721,11 +943,6 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             tb_writer.add_scalar(f'{stage}/total_points', scene.gaussians.get_xyz.shape[0], iteration)
             tb_writer.add_scalar(f'{stage}/deformation_rate', scene.gaussians._deformation_table.sum()/scene.gaussians.get_xyz.shape[0], iteration)
             tb_writer.add_histogram(f"{stage}/scene/motion_histogram", scene.gaussians._deformation_accum.mean(dim=-1)/100, iteration,max_bins=500)
-            
-            if L_depth is not None:
-                tb_writer.add_scalar(f'{stage}/eval/depth_loss', L_depth.item(), iteration)
-            if Lflow is not None:
-                tb_writer.add_scalar(f'{stage}/eval/flow_loss', Lflow.item(), iteration)
         
         torch.cuda.empty_cache()
         

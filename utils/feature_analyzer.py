@@ -30,7 +30,7 @@ class HexPlaneAnalyzer:
         deformation_net: nn.Module,
         config: object,
         num_sample_positions: int = 2000,
-        num_sample_controls: int = 50,
+        num_sample_actions: int = 50,
         enable_tsne: bool = False
     ):
         """
@@ -38,13 +38,13 @@ class HexPlaneAnalyzer:
             deformation_net: 形变网络 (包含HexPlane)
             config: 配置对象
             num_sample_positions: 空间采样点数
-            num_sample_controls: 控制向量采样数
+            num_sample_actions: 动作向量采样数
             enable_tsne: 是否启用t-SNE (计算量大)
         """
         self.deformation_net = deformation_net
         self.config = config
         self.num_sample_positions = num_sample_positions
-        self.num_sample_controls = num_sample_controls
+        self.num_sample_actions = num_sample_actions
         self.enable_tsne = enable_tsne
         
         # 获取HexPlane
@@ -60,7 +60,7 @@ class HexPlaneAnalyzer:
         
         print(f"[FeatureAnalyzer] Initialized")
         print(f"  - Sample positions: {num_sample_positions}")
-        print(f"  - Sample controls: {num_sample_controls}")
+        print(f"  - Sample actions: {num_sample_actions}")
         print(f"  - t-SNE enabled: {enable_tsne}")
     
     def sample_positions(self) -> torch.Tensor:
@@ -85,70 +85,70 @@ class HexPlaneAnalyzer:
         
         return positions
     
-    def sample_controls(self, scene=None) -> torch.Tensor:
+    def sample_actions(self, scene=None) -> torch.Tensor:
         """
-        采样控制向量
+        采样动作向量
         
         策略:
-        - 使用训练集中的控制向量
-        - 添加一些插值的控制向量 (测试泛化)
+        - 使用训练集中的动作向量
+        - 添加一些插值的动作向量 (测试泛化)
         
         Args:
             scene: 场景对象，包含训练数据
             
         Returns:
-            controls: [M, control_dim]
+            actions: [M, action_dim]
         """
-        control_dim = getattr(self.config, 'control_input_dim', 6)
+        action_dim = getattr(self.config, 'action_input_dim', 6)
         
         if scene is not None and hasattr(scene, 'getTrainCameras'):
             # 从训练集采样
             train_cameras = scene.getTrainCameras()
             if len(train_cameras) > 0:
-                # 收集所有控制向量
-                train_controls = []
+                # 收集所有动作向量
+                train_actions = []
                 for cam in train_cameras:
-                    if hasattr(cam, 'control_vec') and cam.control_vec is not None:
-                        ctrl = cam.control_vec
-                        if isinstance(ctrl, torch.Tensor):
-                            train_controls.append(ctrl.cpu())
+                    if hasattr(cam, 'action_vec') and cam.action_vec is not None:
+                        action = cam.action_vec
+                        if isinstance(action, torch.Tensor):
+                            train_actions.append(action.cpu())
                         else:
-                            train_controls.append(torch.tensor(ctrl))
+                            train_actions.append(torch.tensor(action))
                 
-                if len(train_controls) > 0:
-                    train_controls = torch.stack(train_controls)
+                if len(train_actions) > 0:
+                    train_actions = torch.stack(train_actions)
                     
                     # 随机选择一部分
-                    n_train = min(self.num_sample_controls // 2, len(train_controls))
-                    indices = torch.randperm(len(train_controls))[:n_train]
-                    sampled_controls = train_controls[indices]
+                    n_train = min(self.num_sample_actions // 2, len(train_actions))
+                    indices = torch.randperm(len(train_actions))[:n_train]
+                    sampled_actions = train_actions[indices]
                     
-                    # 生成插值控制向量
-                    n_interp = self.num_sample_controls - n_train
+                    # 生成插值动作向量
+                    n_interp = self.num_sample_actions - n_train
                     if n_interp > 0:
-                        interp_controls = []
+                        interp_actions = []
                         for _ in range(n_interp):
-                            idx1, idx2 = torch.randint(0, len(train_controls), (2,))
+                            idx1, idx2 = torch.randint(0, len(train_actions), (2,))
                             alpha = torch.rand(1)
-                            interp = alpha * train_controls[idx1] + (1 - alpha) * train_controls[idx2]
-                            interp_controls.append(interp)
-                        interp_controls = torch.stack(interp_controls)
-                        sampled_controls = torch.cat([sampled_controls, interp_controls], dim=0)
+                            interp = alpha * train_actions[idx1] + (1 - alpha) * train_actions[idx2]
+                            interp_actions.append(interp)
+                        interp_actions = torch.stack(interp_actions)
+                        sampled_actions = torch.cat([sampled_actions, interp_actions], dim=0)
                     
-                    return sampled_controls.cuda()
+                    return sampled_actions.cuda()
         
         # 备用: 随机采样
-        controls = torch.randn(self.num_sample_controls, control_dim, device='cuda')
+        actions = torch.randn(self.num_sample_actions, action_dim, device='cuda')
         # 归一化到合理范围 [-1, 1]
-        controls = torch.tanh(controls)
+        actions = torch.tanh(actions)
         
-        return controls
+        return actions
     
     @torch.no_grad()
     def extract_features(
         self, 
         positions: torch.Tensor, 
-        controls: torch.Tensor,
+        actions: torch.Tensor,
         batch_size: int = 500
     ) -> Tuple[torch.Tensor, Dict]:
         """
@@ -156,7 +156,7 @@ class HexPlaneAnalyzer:
         
         Args:
             positions: [N, 3]
-            controls: [M, control_dim]
+            actions: [M, action_dim]
             batch_size: 批量大小，避免OOM
             
         Returns:
@@ -164,41 +164,41 @@ class HexPlaneAnalyzer:
             extras: dict - 额外信息 (平面特征等)
         """
         N = positions.shape[0]
-        M = controls.shape[0]
+        M = actions.shape[0]
         
         all_features = []
         all_plane_features = []
         
-        # 编码控制向量
-        if hasattr(self.deformation_net, 'control_encoder'):
-            control_latents = []
+        # 编码动作向量
+        if hasattr(self.deformation_net, 'action_encoder'):
+            action_latents = []
             for i in range(0, M, batch_size):
-                batch_ctrl = controls[i:i+batch_size]
-                latent = self.deformation_net.control_encoder(batch_ctrl)
-                control_latents.append(latent)
-            control_latents = torch.cat(control_latents, dim=0)  # [M, 1]
+                batch_action = actions[i:i+batch_size]
+                latent = self.deformation_net.action_encoder(batch_action)
+                action_latents.append(latent)
+            action_latents = torch.cat(action_latents, dim=0)  # [M, 1]
         else:
             # 如果没有encoder，直接用第一个维度
-            control_latents = controls[:, :1]
+            action_latents = actions[:, :1]
         
-        # 对每个控制向量，提取所有位置的特征
+        # 对每个动作向量，提取所有位置的特征
         for m in range(M):
-            ctrl_latent = control_latents[m:m+1].expand(N, -1)  # [N, 1]
+            action_latent = action_latents[m:m+1].expand(N, -1)  # [N, 1]
             
             batch_features = []
             batch_plane_features = []
             
             for i in range(0, N, batch_size):
                 batch_pos = positions[i:i+batch_size]
-                batch_ctrl = ctrl_latent[i:i+batch_size]
+                batch_action = action_latent[i:i+batch_size]
                 
                 # 提取HexPlane特征
-                feat = self.hexplane(batch_pos, batch_ctrl)
+                feat = self.hexplane(batch_pos, batch_action)
                 batch_features.append(feat)
                 
                 # 尝试提取各平面的特征 (如果支持)
                 if hasattr(self.hexplane, 'grid_coefs'):
-                    plane_feats = self._extract_plane_features(batch_pos, batch_ctrl)
+                    plane_feats = self._extract_plane_features(batch_pos, batch_action)
                     batch_plane_features.append(plane_feats)
             
             features_for_ctrl = torch.cat(batch_features, dim=0)
@@ -216,7 +216,7 @@ class HexPlaneAnalyzer:
         
         extras = {
             'plane_features': all_plane_features if all_plane_features else None,
-            'control_latents': control_latents,
+            'action_latents': action_latents,
             'N': N,
             'M': M
         }
@@ -226,7 +226,7 @@ class HexPlaneAnalyzer:
     def _extract_plane_features(
         self, 
         positions: torch.Tensor, 
-        control_latents: torch.Tensor
+        action_latents: torch.Tensor
     ) -> Dict[str, torch.Tensor]:
         """提取各个平面的特征"""
         plane_features = {}
@@ -245,7 +245,7 @@ class HexPlaneAnalyzer:
             pts = positions
         
         # 构建4D坐标 [x, y, z, t]
-        pts_4d = torch.cat([pts, control_latents], dim=-1)  # [N, 4]
+        pts_4d = torch.cat([pts, action_latents], dim=-1)  # [N, 4]
         
         # 提取每个平面的特征
         coo_combs = [(0, 1), (0, 2), (1, 2), (0, 3), (1, 3), (2, 3)]
@@ -513,11 +513,11 @@ class HexPlaneAnalyzer:
         try:
             # 1. 采样
             positions = self.sample_positions()
-            controls = self.sample_controls(scene)
-            print(f"  Sampled {positions.shape[0]} positions, {controls.shape[0]} controls")
+            actions = self.sample_actions(scene)
+            print(f"  Sampled {positions.shape[0]} positions, {actions.shape[0]} actions")
             
             # 2. 提取特征
-            features, extras = self.extract_features(positions, controls)
+            features, extras = self.extract_features(positions, actions)
             print(f"  Extracted features: {features.shape}")
             
             # 3. 计算各项指标

@@ -16,7 +16,7 @@ from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 from time import time as get_time
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, stage="fine", 
-           cam_type = None, is_training = False, iteration = 0, override_control_vec = None):
+           cam_type = None, is_training = False, iteration = 0, override_action_vec = None):
     """
     Render the scene. 
     
@@ -51,30 +51,30 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             debug=pipe.debug
         )
         time = torch.tensor(viewpoint_camera.time).to(means3D.device).repeat(means3D.shape[0],1)
-        if override_control_vec is not None:
-            control_vec = override_control_vec.to(means3D.device)
-            if control_vec.dim() == 1:
-                control_vec = control_vec.unsqueeze(0)
-            control_vec = control_vec.repeat(means3D.shape[0], 1)
-        elif hasattr(viewpoint_camera, 'control_vec') and viewpoint_camera.control_vec is not None:
-            control_vec = viewpoint_camera.control_vec.to(means3D.device)
-            if control_vec.dim() == 1:
-                control_vec = control_vec.unsqueeze(0)  # [6] -> [1, 6]
-            control_vec = control_vec.repeat(means3D.shape[0], 1)  # [1, 6] -> [N, 6]
+        if override_action_vec is not None:
+            action_vec = override_action_vec.to(means3D.device)
+            if action_vec.dim() == 1:
+                action_vec = action_vec.unsqueeze(0)
+            action_vec = action_vec.repeat(means3D.shape[0], 1)
+        elif hasattr(viewpoint_camera, 'action_vec') and viewpoint_camera.action_vec is not None:
+            action_vec = viewpoint_camera.action_vec.to(means3D.device)
+            if action_vec.dim() == 1:
+                action_vec = action_vec.unsqueeze(0)  # [6] -> [1, 6]
+            action_vec = action_vec.repeat(means3D.shape[0], 1)  # [1, 6] -> [N, 6]
         else:
-            control_vec = torch.zeros(means3D.shape[0], 6, device=means3D.device)
+            action_vec = torch.zeros(means3D.shape[0], 6, device=means3D.device)
     else:
         raster_settings = viewpoint_camera['camera']
         time = torch.tensor(viewpoint_camera['time']).to(means3D.device).repeat(means3D.shape[0],1)
-        control_vec = viewpoint_camera.get('control_vec', None)
-        if control_vec is None:
-            control_vec = torch.zeros(means3D.shape[0], 6, device=means3D.device)
+        action_vec = viewpoint_camera.get('action_vec', None)
+        if action_vec is None:
+            action_vec = torch.zeros(means3D.shape[0], 6, device=means3D.device)
         else:
-            control_vec = control_vec.to(means3D.device)
-            if control_vec.dim() == 1:
-                control_vec = control_vec.unsqueeze(0)
-            if control_vec.shape[0] == 1:
-                control_vec = control_vec.repeat(means3D.shape[0], 1)
+            action_vec = action_vec.to(means3D.device)
+            if action_vec.dim() == 1:
+                action_vec = action_vec.unsqueeze(0)
+            if action_vec.shape[0] == 1:
+                action_vec = action_vec.repeat(means3D.shape[0], 1)
         
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
@@ -108,7 +108,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         #                                                                  time[deformation_point])
         means3D_final, scales_final, rotations_final, opacity_final, shs_final = pc._deformation(means3D, scales, 
                                                                  rotations, opacity, shs,
-                                                                 control_vec)
+                                                                 action_vec)
     else:
         raise NotImplementedError
 
@@ -123,7 +123,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     """DropGaussian Implementation"""
     if is_training and "fine" in stage:
         max_drop_rate = 0.2
-        max_iterations = 8000
+        max_iterations = 12000
         current_drop_rate = max_drop_rate * min(iteration / max_iterations, 1.0)
         
         num_gaussians = opacity.shape[0]
@@ -192,4 +192,3 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             "gs_per_pixel": gs_per_pixel,
             "weight_per_gs_pixel": weight_per_gs_pixel,
             "x_mu": x_mu}
-
