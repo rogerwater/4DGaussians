@@ -1,0 +1,13 @@
+TASK 5 VERIFICATION: Documentation Update
+=========================================
+
+[excerpt of new section]
+### Naming Convention: action_processor vs control_processor
+
+**Semantic Equivalence:** The terms `action_processor` and `control_processor` are **functionally identical** and **semantically equivalent** in this codebase. Both refer to the module responsible for encoding external control or action signals (e.g., robot joint angles, velocity commands) for the deformation network.
+
+**Purpose:** These modules encode low-dimensional control vectors into a feature space that can be fused with spatial features (via FiLM in TriPlane or grid lookup in HexPlane).
+
+**Current Standard:** The TriPlane architecture (`deformation_triplane.py`) uses `action_processor`. This naming is strictly enforced to ensure **checkpoint compatibility**, as trained models store weights under keys containing `action_processor` (e.g., `deformation_net.action_processor.mlp.*`).
+
+RESULT: PASS

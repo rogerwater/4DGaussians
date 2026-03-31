@@ -93,6 +93,25 @@ model_path/
 
 ## CONVENTIONS
 
+### Naming Convention: action_processor vs control_processor
+
+**Semantic Equivalence:** The terms `action_processor` and `control_processor` are **functionally identical** and **semantically equivalent** in this codebase. Both refer to the module responsible for encoding external control or action signals (e.g., robot joint angles, velocity commands) for the deformation network.
+
+**Purpose:** These modules encode low-dimensional control vectors into a feature space that can be fused with spatial features (via FiLM in TriPlane or grid lookup in HexPlane).
+
+**Current Standard:** The TriPlane architecture (`deformation_triplane.py`) uses `action_processor`. This naming is strictly enforced to ensure **checkpoint compatibility**, as trained models store weights under keys containing `action_processor` (e.g., `deformation_net.action_processor.mlp.*`).
+
+**Historical Evolution:**
+- Early development used `action_processor`.
+- A brief transition to `control_processor` occurred for semantic clarity.
+- The code was reverted to `action_processor` to maintain compatibility with existing trained checkpoints.
+
+**Distinction from HexPlane:**
+- **TriPlane:** Uses `ActionProcessor` (`scene/triplane.py:252`), which typically involves an MLP and optional positional encoding, fused with spatial features via FiLM.
+- **HexPlane:** Uses `ControlEncoder` (`scene/deformation.py`), which compresses control signals to a 1D latent for 4D grid lookup. These are different architectures with different compression strategies.
+
+**Why This Matters:** Renaming or using `control_processor` in the TriPlane implementation would cause `RuntimeError` during `state_dict` loading when resuming from standard checkpoints.
+
 ### Import Pattern
 ```python
 from scene import Scene, GaussianModel
