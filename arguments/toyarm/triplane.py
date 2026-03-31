@@ -28,13 +28,13 @@ ModelHiddenParams = dict(
     net_width = 128,      # Hidden dimension
     grid_pe = 0,          # Positional encoding on grid features (0 = disabled)
     
-    # ========== Control Signal Configuration ==========
-    control_input_dim = 15,         # Input control dimension (e.g., 6-DOF)
-    control_use_pe = False,         # Use positional encoding for control
-    control_num_frequencies = 4,   # PE frequency bands
-    control_hidden_dim = 128,       # Hidden dim for control MLP (if used)
-    control_output_dim = 32,     # None = use PE output directly (recommended)
-                                   # Set to a value (e.g., 32) to project control features
+    # ========== Action Signal Configuration ==========
+    action_input_dim = 15,         # Input control dimension (e.g., 6-DOF)
+    action_use_pe = False,         # Use positional encoding for control
+    action_num_frequencies = 4,   # PE frequency bands
+    action_hidden_dim = 128,       # Hidden dim for control MLP (if used)
+    action_output_dim = 32,     # None = use PE output directly (recommended)
+                                    # Set to a value (e.g., 32) to project control features
     
     # ========== FiLM Fusion Configuration (NEW) ==========
     film_hidden_dim = 128,          # Hidden dim for FiLM γ/β generation

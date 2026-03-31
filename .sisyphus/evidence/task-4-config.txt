@@ -1,0 +1,24 @@
+TASK 4 VERIFICATION: Config Parameter Rename
+================================================
+
+CHECK 1: No remaining control_* parameters
+$ grep -E "control_(input_dim|use_pe|num_frequencies|hidden_dim|output_dim)" arguments/toyarm/triplane.py
+(no output - PASS)
+
+CHECK 2: All action_* parameters present
+$ grep -n -E "action_(input_dim|use_pe|num_frequencies|hidden_dim|output_dim)" arguments/toyarm/triplane.py
+32:    action_input_dim = 15,         # Input control dimension (e.g., 6-DOF)
+33:    action_use_pe = False,         # Use positional encoding for control
+34:    action_num_frequencies = 4,   # PE frequency bands
+35:    action_hidden_dim = 128,       # Hidden dim for control MLP (if used)
+36:    action_output_dim = 32,     # None = use PE output directly (recommended)
+
+CHECK 3: Comment updated
+$ grep -n "Action Signal Configuration" arguments/toyarm/triplane.py
+31:     # ========== Action Signal Configuration ==========
+
+RESULT: PASS
+- All 5 parameters renamed: control_* → action_*
+- Comment updated from "Control" to "Action"
+- Parameter values preserved (15, False, 4, 128, 32)
+- Configuration now matches scene/deformation_triplane.py getattr calls
