@@ -171,7 +171,7 @@ Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6
   ```
 
   **Evidence to Capture**:
-  - [ ] task-1-class-rename.txt: grep 验证输出
+  - [x] task-1-class-rename.txt: grep 验证输出
 
   **Commit**: NO（与 Task 2 一起提交）
 
@@ -251,8 +251,8 @@ Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6
   ```
 
   **Evidence to Capture**:
-  - [ ] task-2-import-instantiate.txt: 导入和实例化验证
-  - [ ] task-2-references.txt: 引用完整性验证
+  - [x] task-2-import-instantiate.txt: 导入和实例化验证
+  - [x] task-2-references.txt: 引用完整性验证
 
   **Commit**: YES（与 Task 1 一起）
   - Message: `refactor(scene): rename ControlProcessor to ActionProcessor for checkpoint compatibility`
@@ -261,7 +261,7 @@ Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6
 
 ---
 
-- [ ] 3. 更新 `utils/triplane_film_analyzer.py` 中的引用
+- [x] 3. 更新 `utils/triplane_film_analyzer.py` 中的引用
 
   **What to do**:
   - Line 79: `self.control_processor = inner_net.control_processor` → `self.action_processor = inner_net.action_processor`
@@ -311,7 +311,7 @@ Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6
   ```
 
   **Evidence to Capture**:
-  - [ ] task-3-analyzer.txt: grep 验证输出
+  - [x] task-3-analyzer.txt: grep 验证输出
 
   **Commit**: YES
   - Message: `refactor(utils): update triplane_film_analyzer to use action_processor`
@@ -383,7 +383,7 @@ Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6
   ```
 
   **Evidence to Capture**:
-  - [ ] task-4-config.txt: 配置参数验证
+  - [x] task-4-config.txt: 配置参数验证
 
   **Commit**: YES
   - Message: `refactor(config): rename control_* params to action_* for consistency`
@@ -445,7 +445,7 @@ Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6
   ```
 
   **Evidence to Capture**:
-  - [ ] task-5-doc.txt: 新增文档内容摘录
+  - [x] task-5-doc.txt: 新增文档内容摘录
 
   **Commit**: YES
   - Message: `docs(scene): document action_processor vs control_processor naming convention`
@@ -541,9 +541,9 @@ Task 1 → Task 2 → Task 3 → Task 4 → Task 5 → Task 6
   ```
 
   **Evidence to Capture**:
-  - [ ] task-6-lsp.txt: LSP 诊断结果
-  - [ ] task-6-grep.txt: Grep 验证输出
-  - [ ] task-6-syntax.txt: 语法检查输出
+  - [x] task-6-lsp.txt: LSP 诊断结果
+  - [x] task-6-grep.txt: Grep 验证输出
+  - [x] task-6-syntax.txt: 语法检查输出
 
   **Commit**: NO（验证任务不产生代码变更）
 
