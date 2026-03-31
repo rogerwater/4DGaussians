@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.init as init
 from typing import Optional, List, Tuple
 
-from scene.triplane import TriPlaneField, ControlProcessor
+from scene.triplane import TriPlaneField, ActionProcessor
 from scene.grid import DenseGrid
 from utils.graphics_utils import batch_quaternion_multiply
 
@@ -183,27 +183,27 @@ class DeformationTriPlane(nn.Module):
         )
         
         # 2. Control signal processor
-        # 默认值与ControlProcessor保持一致
-        control_use_pe = getattr(args, 'control_use_pe', True)
-        control_num_freq = getattr(args, 'control_num_frequencies', 4)
-        control_input_dim = getattr(args, 'control_input_dim', 6)
-        control_hidden = getattr(args, 'control_hidden_dim', 128)  # 与ControlProcessor默认值一致
+        # 默认值与ActionProcessor保持一致
+        action_use_pe = getattr(args, 'action_use_pe', True)
+        action_num_freq = getattr(args, 'action_num_frequencies', 4)
+        action_input_dim = getattr(args, 'action_input_dim', 6)
+        action_hidden = getattr(args, 'action_hidden_dim', 128)  # 与ActionProcessor默认值一致
         # TriPlane+FiLM必须指定output_dim，提供合理默认值
-        control_output_dim = getattr(args, 'control_output_dim', 64)
+        action_output_dim = getattr(args, 'action_output_dim', 64)
         
-        self.control_processor = ControlProcessor(
-            input_dim=control_input_dim,
-            use_pe=control_use_pe,
-            num_frequencies=control_num_freq,
-            hidden_dim=control_hidden,  # 总是使用hidden_dim
-            output_dim=control_output_dim  # 保证非None
+        self.action_processor = ActionProcessor(
+            input_dim=action_input_dim,
+            use_pe=action_use_pe,
+            num_frequencies=action_num_freq,
+            hidden_dim=action_hidden,  # 总是使用hidden_dim
+            output_dim=action_output_dim  # 保证非None
         )
         
         # 3. Compute dimensions
         self.spatial_dim = self.triplane.feat_dim
         if grid_pe > 0:
             self.spatial_dim = self.spatial_dim * (1 + 2 * grid_pe)
-        self.control_dim = self.control_processor.output_dim
+        self.action_dim = self.action_processor.output_dim
         
         # 4. FiLM fusion configuration
         film_hidden = getattr(args, 'film_hidden_dim', 64)
@@ -211,7 +211,7 @@ class DeformationTriPlane(nn.Module):
         # 5. Multi-head FiLM decoder
         self.film_decoder = MultiHeadFiLMDecoder(
             spatial_dim=self.spatial_dim,
-            control_dim=self.control_dim,
+            control_dim=self.action_dim,
             hidden_dim=W,
             num_layers=D,
             film_hidden=film_hidden
@@ -240,7 +240,7 @@ class DeformationTriPlane(nn.Module):
         
         print(f"[DeformationTriPlane] Using Multi-head FiLM fusion")
         print(f"[DeformationTriPlane]   - Spatial dim: {self.spatial_dim}")
-        print(f"[DeformationTriPlane]   - Control dim: {self.control_dim}")
+        print(f"[DeformationTriPlane]   - Action dim: {self.action_dim}")
         print(f"[DeformationTriPlane]   - FiLM layers: {D}")
         print(f"[DeformationTriPlane]   - Hidden dim: {W}")
     
@@ -313,23 +313,23 @@ class DeformationTriPlane(nn.Module):
     def query_features(
         self, 
         pts: torch.Tensor, 
-        control_vec: torch.Tensor
+        action_vec: torch.Tensor
     ) -> torch.Tensor:
         """
         Query fused features using Multi-head FiLM.
         
         Args:
             pts: [N, 3] - 3D positions
-            control_vec: [N, control_dim] - Control vectors
+            action_vec: [N, action_dim] - Action vectors
             
         Returns:
             hidden: [N, W] - Fused hidden features
         """
         if self.no_grid:
             # Fallback mode without grid
-            control_feat = self.control_processor(control_vec)
+            action_feat = self.action_processor(action_vec)
             # Simple MLP fallback
-            combined = torch.cat([pts, control_feat], dim=-1)
+            combined = torch.cat([pts, action_feat], dim=-1)
             hidden = nn.functional.relu(
                 nn.functional.linear(combined, torch.randn(self.W, combined.shape[-1], device=pts.device))
             )
@@ -342,11 +342,11 @@ class DeformationTriPlane(nn.Module):
         if self.grid_pe > 0:
             spatial_feat = self._apply_grid_pe(spatial_feat)
         
-        # 2. Process control vector
-        control_feat = self.control_processor(control_vec)
+        # 2. Process action vector
+        action_feat = self.action_processor(action_vec)
         
         # 3. Multi-head FiLM fusion
-        hidden = self.film_decoder(spatial_feat, control_feat)
+        hidden = self.film_decoder(spatial_feat, action_feat)
         
         return hidden
     
@@ -358,7 +358,7 @@ class DeformationTriPlane(nn.Module):
         opacity: Optional[torch.Tensor] = None, 
         shs_emb: Optional[torch.Tensor] = None, 
         time_feature: Optional[torch.Tensor] = None, 
-        control_vec: Optional[torch.Tensor] = None
+        action_vec: Optional[torch.Tensor] = None
     ):
         """
         Forward pass.
@@ -368,17 +368,17 @@ class DeformationTriPlane(nn.Module):
             scales_emb, rotations_emb: Attribute embeddings
             opacity, shs_emb: Gaussian attributes
             time_feature: [UNUSED] Legacy parameter
-            control_vec: [N, control_dim] - Control vectors
+            action_vec: [N, action_dim] - Action vectors
             
         Returns:
             Tuple of deformed attributes
         """
-        if control_vec is None:
+        if action_vec is None:
             return self.forward_static(rays_pts_emb[:, :3])
         else:
             return self.forward_dynamic(
                 rays_pts_emb, scales_emb, rotations_emb,
-                opacity, shs_emb, control_vec
+                opacity, shs_emb, action_vec
             )
     
     def forward_static(self, pts: torch.Tensor):
@@ -396,7 +396,7 @@ class DeformationTriPlane(nn.Module):
         rotations_emb: torch.Tensor, 
         opacity_emb: torch.Tensor, 
         shs_emb: torch.Tensor, 
-        control_vec: torch.Tensor
+        action_vec: torch.Tensor
     ):
         """
         Dynamic forward with Multi-head FiLM control modulation.
@@ -407,7 +407,7 @@ class DeformationTriPlane(nn.Module):
             rotations_emb: [N, 4+PE] - Rotations with PE
             opacity_emb: [N, 1] - Opacity
             shs_emb: [N, 16, 3] - SH coefficients
-            control_vec: [N, control_dim] - Full control vector
+            action_vec: [N, action_dim] - Full action vector
             
         Returns:
             Tuple of (pts, scales, rotations, opacity, shs)
@@ -416,7 +416,7 @@ class DeformationTriPlane(nn.Module):
         pts = rays_pts_emb[:, :3]
         
         # Query fused features with FiLM modulation
-        hidden = self.query_features(pts, control_vec)
+        hidden = self.query_features(pts, action_vec)
         
         # Compute deformation mask
         if self.static_mlp is not None:
@@ -524,7 +524,7 @@ class deform_network_triplane(nn.Module):
         rotations: Optional[torch.Tensor] = None, 
         opacity: Optional[torch.Tensor] = None, 
         shs: Optional[torch.Tensor] = None, 
-        control_vec: Optional[torch.Tensor] = None
+        action_vec: Optional[torch.Tensor] = None
     ):
         """
         Forward pass.
@@ -532,15 +532,15 @@ class deform_network_triplane(nn.Module):
         Args:
             point: [N, 3] - Positions
             scales, rotations, opacity, shs: Gaussian attributes
-            control_vec: [N, control_dim] - Full control vector
+            action_vec: [N, action_dim] - Full action vector
             
         Returns:
             Deformed attributes
         """
-        if control_vec is None:
+        if action_vec is None:
             return self.forward_static(point)
         else:
-            return self.forward_dynamic(point, scales, rotations, opacity, shs, control_vec)
+            return self.forward_dynamic(point, scales, rotations, opacity, shs, action_vec)
     
     @property
     def get_aabb(self):
@@ -560,13 +560,13 @@ class deform_network_triplane(nn.Module):
         rotations: torch.Tensor, 
         opacity: torch.Tensor, 
         shs: torch.Tensor, 
-        control_vec: torch.Tensor
+        action_vec: torch.Tensor
     ):
         """
         Dynamic deformation with Multi-head FiLM fusion.
         
-        The control vector modulates spatial features through FiLM layers,
-        allowing for expressive control-dependent deformations.
+        The action vector modulates spatial features through FiLM layers,
+        allowing for expressive action-dependent deformations.
         """
         # Apply positional encoding
         point_emb = poc_fre(point, self.pos_poc)
@@ -581,7 +581,7 @@ class deform_network_triplane(nn.Module):
             opacity,
             shs,
             None,  # time_feature (unused)
-            control_vec
+            action_vec
         )
         
         return means3D, scales, rotations, opacity, shs

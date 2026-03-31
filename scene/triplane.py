@@ -249,15 +249,15 @@ class TriPlaneField(nn.Module):
         return self.get_spatial_features(pts)
 
 
-class ControlProcessor(nn.Module):
+class ActionProcessor(nn.Module):
     """
-    Process control signals with optional positional encoding.
+    Process action signals with optional positional encoding.
     
-    This module prepares control vectors for injection into the decoder.
-    Unlike ControlEncoder which compresses to 1D, this preserves dimensionality.
+    This module prepares action vectors for injection into the decoder.
+    Unlike ActionEncoder which compresses to 1D, this preserves dimensionality.
     
     Args:
-        input_dim: Control vector dimension (e.g., 6 for 6-DOF)
+        input_dim: Action vector dimension (e.g., 6 for 6-DOF)
         use_pe: Whether to use positional encoding
         num_frequencies: Number of frequency bands for PE
         hidden_dim: Optional MLP hidden dimension for feature extraction
@@ -308,7 +308,7 @@ class ControlProcessor(nn.Module):
             
         self._init_weights()
         
-        print(f"[ControlProcessor] Input: {input_dim} → PE: {pe_dim} → MLP → Output: {output_dim}")
+        print(f"[ActionProcessor] Input: {input_dim} → PE: {pe_dim} → MLP → Output: {output_dim}")
     
     def _init_weights(self):
         for m in self.modules():
