@@ -76,7 +76,7 @@ class TriPlaneFiLMAnalyzer:
             inner_net = deformation_net
         
         self.triplane = inner_net.triplane
-        self.control_processor = inner_net.control_processor
+        self.action_processor = inner_net.action_processor
         self.film_decoder = inner_net.film_decoder
         
         # 采样配置
@@ -174,7 +174,7 @@ class TriPlaneFiLMAnalyzer:
         
         # 2. 通过ControlProcessor编码
         with torch.no_grad():
-            action_features = self.control_processor(actions)  # [N, control_dim]
+            action_features = self.action_processor(actions)  # [N, control_dim]
         
         # 3. 计算action separability
         action_features_norm = F.normalize(action_features, dim=1)
@@ -252,7 +252,7 @@ class TriPlaneFiLMAnalyzer:
         # 2. 获取空间特征和控制特征
         with torch.no_grad():
             spatial_feat = self.triplane(positions)
-            control_feat = self.control_processor(actions)
+            action_feat = self.action_processor(actions)
         
         # 3. 逐层分析FiLM调制
         gamma_stats = []
@@ -274,7 +274,7 @@ class TriPlaneFiLMAnalyzer:
                 h_before = film_block.norm(h_before)
                 
                 # 生成γ和β
-                film_params = film_layer.film_generator(control_feat)
+                film_params = film_layer.film_generator(action_feat)
                 gamma = film_params[:, :film_layer.feature_dim]
                 beta = film_params[:, film_layer.feature_dim:]
             
@@ -335,14 +335,14 @@ class TriPlaneFiLMAnalyzer:
             actions = actions.clone().requires_grad_(True)
             
             spatial_feat = self.triplane(positions)
-            control_feat = self.control_processor(actions)
+            action_feat = self.action_processor(actions)
             
             contributions = []
             h = spatial_feat
             num_layers = len(self.film_decoder.film_blocks)
             
             for idx, film_block in enumerate(self.film_decoder.film_blocks):
-                h_out = film_block(h, control_feat)
+                h_out = film_block(h, action_feat)
                 
                 # 计算输出对输入的梯度
                 output_sum = h_out.sum()
@@ -389,7 +389,7 @@ class TriPlaneFiLMAnalyzer:
         # 2. 提取特征
         with torch.no_grad():
             spatial_feats = self.triplane(positions)           # [50, 96]
-            action_feats = self.control_processor(actions)     # [50, 32]
+            action_feats = self.action_processor(actions)     # [50, 32]
         
         # 3. 计算Pearson相关系数
         spatial_norm = (spatial_feats - spatial_feats.mean(0)) / (spatial_feats.std(0) + 1e-6)
@@ -415,7 +415,7 @@ class TriPlaneFiLMAnalyzer:
         
         with torch.no_grad():
             spatial_grid = self.triplane(pos_grid)
-            action_grid = self.control_processor(act_grid)
+            action_grid = self.action_processor(act_grid)
             fused_feats = self.film_decoder(spatial_grid, action_grid)
         
         # 分析融合后的特征
