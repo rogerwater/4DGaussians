@@ -137,7 +137,7 @@ class PointTracker:
             #   frame = frame / 255.0
             # So it expects [0, 255] input!
             
-            video_b = video_tensor[b].permute(0, 2, 3, 1).cpu().numpy() # (T, H, W, C)
+            video_b = video_tensor[b].permute(0, 2, 3, 1).cpu().detach().numpy() # (T, H, W, C)
             video_b = (np.clip(video_b, 0, 1) * 255).astype(np.uint8)
             
             # 1. Initialize with first frame

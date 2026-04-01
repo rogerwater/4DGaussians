@@ -684,7 +684,10 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
             else:
                 next_flow = current_flow  # 不预测
             
-            predictions['flow'].append(next_flow.cpu().numpy())
+            if grad_enabled:
+                predictions['flow'].append(next_flow)  # 保留 tensor
+            else:
+                predictions['flow'].append(next_flow.cpu().numpy())  # numpy
             
             # 2. 稀疏渲染（用于验证和可解释性）
             if self.use_sparse_rendering:
@@ -701,34 +704,56 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
                 # render_with_control返回 (3, H, W)，需要转换为 (H, W, 3)
                 timestep_rgbs = []
                 for b in range(B):
-                    full_rgb = self.render_with_control(control_vec[b])
-                    full_rgb_hwc = full_rgb.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
+                    full_rgb = self.render_with_control(control_vec[b], grad_enabled=grad_enabled)
+                    
+                    if grad_enabled:
+                        # 保留tensor用于梯度计算
+                        full_rgb_hwc = full_rgb.permute(1, 2, 0)  # (H, W, 3) tensor
+                    else:
+                        # 转换为numpy（原始行为）
+                        full_rgb_hwc = full_rgb.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
                     timestep_rgbs.append(full_rgb_hwc)
-                predictions['rgb'].append(np.stack(timestep_rgbs, axis=0))  # (B, H, W, 3)
+                
+                if grad_enabled:
+                    # 返回torch.stack保留梯度
+                    predictions['rgb'].append(torch.stack(timestep_rgbs, dim=0))  # (B, H, W, 3) tensor
+                else:
+                    # 返回numpy（原始行为）
+                    predictions['rgb'].append(np.stack(timestep_rgbs, axis=0))  # (B, H, W, 3)
             
             # 更新当前光流
             current_flow = next_flow
         
-        # 转换为numpy数组
-        predictions['flow'] = np.stack(predictions['flow'], axis=1)  # (B, T, N, 3)
+        # 转换为numpy数组（仅在非梯度模式下）
+        if not grad_enabled:
+            predictions['flow'] = np.stack(predictions['flow'], axis=1)  # (B, T, N, 3)
+        else:
+            # 保留torch tensor for gradients
+            predictions['flow'] = torch.stack(predictions['flow'], dim=1)  # (B, T, N, 3)
         
         # 处理RGB输出
         if self.use_sparse_rendering:
             if len(predictions['sparse_rgb']) > 0:
                 # 用sparse_rgb作为rgb输出
-                predictions['rgb'] = np.stack(predictions['sparse_rgb'], axis=1)
+                if not grad_enabled:
+                    predictions['rgb'] = np.stack(predictions['sparse_rgb'], axis=1)
+                else:
+                    predictions['rgb'] = torch.stack(predictions['sparse_rgb'], dim=1)
             else:
                 # Sparse rendering没有生成RGB，使用fallback
                 print("[Warning] Sparse rendering failed, rendering full images...")
-                predictions['rgb'] = self._render_fallback_rgb(pred_actions, B, T)
+                predictions['rgb'] = self._render_fallback_rgb(pred_actions, B, T, grad_enabled=grad_enabled)
         else:
             if len(predictions['rgb']) > 0:
                 # 使用完整渲染的RGB
-                predictions['rgb'] = np.stack(predictions['rgb'], axis=1)
+                if not grad_enabled:
+                    predictions['rgb'] = np.stack(predictions['rgb'], axis=1)
+                else:
+                    predictions['rgb'] = torch.stack(predictions['rgb'], dim=1)
             else:
                 # 完整渲染失败，使用fallback
                 print("[Warning] No RGB predictions generated, rendering fallback images...")
-                predictions['rgb'] = self._render_fallback_rgb(pred_actions, B, T)
+                predictions['rgb'] = self._render_fallback_rgb(pred_actions, B, T, grad_enabled=grad_enabled)
         
         # 确保删除sparse_rgb键
         if 'sparse_rgb' in predictions:
@@ -739,7 +764,7 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
         
         return predictions
     
-    def _render_fallback_rgb(self, pred_actions, B, T):
+    def _render_fallback_rgb(self, pred_actions, B, T, grad_enabled=False):
         """生成fallback RGB图像"""
         fallback_rgbs = []
         for t in range(T):
@@ -750,11 +775,23 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
             )
             timestep_rgbs = []
             for b in range(B):
-                full_rgb = self.render_with_control(control_vec[b])
-                full_rgb_hwc = full_rgb.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
+                full_rgb = self.render_with_control(control_vec[b], grad_enabled=grad_enabled)
+                
+                if grad_enabled:
+                    full_rgb_hwc = full_rgb.permute(1, 2, 0)  # (H, W, 3) tensor
+                else:
+                    full_rgb_hwc = full_rgb.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
                 timestep_rgbs.append(full_rgb_hwc)
-            fallback_rgbs.append(np.stack(timestep_rgbs, axis=0))
-        return np.stack(fallback_rgbs, axis=1)  # (B, T, H, W, 3)
+            
+            if grad_enabled:
+                fallback_rgbs.append(torch.stack(timestep_rgbs, dim=0))
+            else:
+                fallback_rgbs.append(np.stack(timestep_rgbs, axis=0))
+        
+        if grad_enabled:
+            return torch.stack(fallback_rgbs, dim=1)  # (B, T, H, W, 3)
+        else:
+            return np.stack(fallback_rgbs, axis=1)  # (B, T, H, W, 3)
     
     def _initialize_flow_points(
         self,

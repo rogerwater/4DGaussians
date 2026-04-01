@@ -184,12 +184,12 @@ class DeformationTriPlane(nn.Module):
         
         # 2. Control signal processor
         # 默认值与ActionProcessor保持一致
-        action_use_pe = getattr(args, 'action_use_pe', True)
+        action_use_pe = getattr(args, 'action_use_pe', False)
         action_num_freq = getattr(args, 'action_num_frequencies', 4)
-        action_input_dim = getattr(args, 'action_input_dim', 6)
+        action_input_dim = getattr(args, 'action_input_dim', 15)
         action_hidden = getattr(args, 'action_hidden_dim', 128)  # 与ActionProcessor默认值一致
         # TriPlane+FiLM必须指定output_dim，提供合理默认值
-        action_output_dim = getattr(args, 'action_output_dim', 64)
+        action_output_dim = getattr(args, 'action_output_dim', 32)
         
         self.action_processor = ActionProcessor(
             input_dim=action_input_dim,
