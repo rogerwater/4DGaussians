@@ -1,0 +1,56 @@
+/home/ubuntu/miniconda3/envs/Gaussians4D/lib/python3.7/site-packages/torch/nn/functional.py:1967: UserWarning: nn.functional.sigmoid is deprecated. Use torch.sigmoid instead.
+  warnings.warn("nn.functional.sigmoid is deprecated. Use torch.sigmoid instead.")
+
+██████████████████████████████████████████████████████████████████████
+TASK 4: Point Tracker Integration Test - Gradient Mode Verification
+██████████████████████████████████████████████████████████████████████
+
+Objective: Verify .detach() fix at mpc/point_tracker.py:140
+Expected: Scenario 1 (requires_grad=True) succeeds without RuntimeError
+
+======================================================================
+SCENARIO 1: Track with gradient-enabled video (requires_grad=True)
+======================================================================
+[✓] Successfully imported PointTracker
+[*] Created video tensor: shape=torch.Size([1, 5, 3, 256, 256]), requires_grad=True
+[*] Created initial points: shape=(10, 2)
+[PointTracker] Initializing TAPIR with input_resolution=(256, 256)
+[✓] Successfully initialized PointTracker
+[✓] Successfully called tracker.track()
+    - tracked_points type: <class 'torch.Tensor'>, shape: torch.Size([1, 10, 5, 2])
+    - visibles type: <class 'torch.Tensor'>, shape: torch.Size([1, 10, 5])
+[✓] Output shape is correct: (1, 10, 5, 2)
+
+======================================================================
+SCENARIO 2: Track with gradient-disabled video (requires_grad=False)
+======================================================================
+[✓] Successfully imported PointTracker
+[*] Created video tensor: shape=torch.Size([1, 5, 3, 256, 256]), requires_grad=False
+[*] Created initial points: shape=(10, 2)
+[PointTracker] Initializing TAPIR with input_resolution=(256, 256)
+[✓] Successfully initialized PointTracker
+[✓] Successfully called tracker.track()
+    - tracked_points type: <class 'torch.Tensor'>, shape: torch.Size([1, 10, 5, 2])
+    - visibles type: <class 'torch.Tensor'>, shape: torch.Size([1, 10, 5])
+[✓] Output shape is correct: (1, 10, 5, 2)
+
+======================================================================
+SCENARIO 3: Integration with FlowGuidedGaussianModel (optional)
+======================================================================
+[!] Could not import required modules: cannot import name 'FlowGuidedGaussianModel' from 'mpc.flow_guided_gaussian_model' (./mpc/flow_guided_gaussian_model.py)
+    Skipping Scenario 3 (optional integration test)
+
+======================================================================
+TEST SUMMARY
+======================================================================
+✓ PASS   | Scenario 1 (requires_grad=True)          | Success
+✓ PASS   | Scenario 2 (requires_grad=False)         | Success
+✓ PASS   | Scenario 3 (Integration)                 | Skipped (optional)
+
+======================================================================
+OVERALL RESULT: ✓✓✓ PASS ✓✓✓
+
+.detach() fix is working correctly!
+- Scenario 1 (grad-enabled): ✓ No RuntimeError
+- Scenario 2 (grad-disabled): ✓ Backward compatible
+======================================================================

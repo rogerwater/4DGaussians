@@ -1,0 +1,5 @@
+FAILURE CASE TESTING (DATA-ONLY)
+large_delta_60deg: valid=False, penalty=0.5235987755982988
+near_boundary_sincos: valid=True, penalty=0.0
+multi_wrap_180: valid=True, penalty=0.0
+optical_flow_independence: valid=True, penalty=0.0

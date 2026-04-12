@@ -39,6 +39,7 @@ from mpc.flow_objectives import (
     ActionRegularizationObjective,
 )
 from mpc.cem import CEMOptimizer
+from mpc.cem_gd import CEMGDOptimizer
 from mpc.sampler import CorrelatedNoiseSampler
 from mpc.objectives import CombinedObjective, SquaredError, VGGPerceptualObjective
 from mpc.utils import ObservationList, write_moviepy_gif
@@ -433,22 +434,34 @@ def setup_flow_guided_cem(
     direction_loss_type: str = "cosine",
     action_regularization_weight: float = 0.0,
     max_action_delta: float = 0.5,
+    optimizer_type: str = "cem-gd",
+    num_samples_init: int = 200,
+    num_samples_replan: int = 100,
+    num_grad_seqs: int = 5,
+    grad_lr: float = 0.01,
+    grad_steps: int = 15,
 ):
     """
-    配置光流引导的CEM优化器
+    配置光流引导的CEM或CEM-GD优化器
     
     Args:
         model: FlowGuidedGaussianDynamicsModel
         control_dim: 控制维度
         horizon: 规划视野
-        num_samples: CEM采样数
+        num_samples: CEM采样数（仅用于纯CEM模式）
         opt_iters: CEM优化迭代数
         vgg_weight: VGG感知损失权重
         direction_weight: 光流方向损失权重
         verbose: 是否打印详细信息
+        optimizer_type: 优化器类型（'cem' 或 'cem-gd'）
+        num_samples_init: CEM-GD初始规划采样数
+        num_samples_replan: CEM-GD重规划采样数
+        num_grad_seqs: CEM-GD梯度优化序列数（top-k）
+        grad_lr: CEM-GD梯度下降学习率
+        grad_steps: CEM-GD梯度下降步数
     
     Returns:
-        optimizer: 配置好的CEMOptimizer
+        optimizer: 配置好的CEMOptimizer或CEMGDOptimizer
         objectives_dict: 目标函数字典（用于打印各项reward）
     """
     # 创建采样器
@@ -513,19 +526,39 @@ def setup_flow_guided_cem(
 
     objective = CombinedObjective(objectives_dict)
     
-    # 创建CEM优化器
-    optimizer = CEMOptimizer(
-        model=model,
-        objective=objective,
-        sampler=sampler,
-        a_dim=control_dim,
-        horizon=horizon,
-        num_samples=num_samples,
-        elites_frac=0.1,
-        opt_iters=opt_iters,
-        alpha=0.1,
-        verbose=verbose,
-    )
+    # 创建优化器（根据optimizer_type选择CEM或CEM-GD）
+    if optimizer_type == 'cem-gd':
+        optimizer = CEMGDOptimizer(
+            model=model,
+            objective=objective,
+            sampler=sampler,
+            a_dim=control_dim,
+            horizon=horizon,
+            num_samples_init=num_samples_init,
+            num_samples_replan=num_samples_replan,
+            elites_frac=0.1,
+            opt_iters=opt_iters,
+            alpha=0.1,
+            verbose=verbose,
+            num_grad_opt_seqs=num_grad_seqs,
+            start_lr=grad_lr,
+            max_iterations=grad_steps,
+        )
+        print(f"  ✓ Created CEM-GD optimizer: {num_samples_init}/{num_samples_replan} samples, {num_grad_seqs} grad seqs, lr={grad_lr}")
+    else:  # 'cem'
+        optimizer = CEMOptimizer(
+            model=model,
+            objective=objective,
+            sampler=sampler,
+            a_dim=control_dim,
+            horizon=horizon,
+            num_samples=num_samples,
+            elites_frac=0.1,
+            opt_iters=opt_iters,
+            alpha=0.1,
+            verbose=verbose,
+        )
+        print(f"  ✓ Created pure CEM optimizer: {num_samples} samples")
     
     return optimizer, objectives_dict
 
@@ -568,6 +601,12 @@ def run_mpc_from_images(
     max_action_delta: float = 0.5,
     use_motion_mask: bool = True,
     motion_threshold_percentile: float = 50.0,
+    optimizer_type: str = "cem-gd",
+    num_samples_init: int = 200,
+    num_samples_replan: int = 100,
+    num_grad_seqs: int = 5,
+    grad_lr: float = 0.01,
+    grad_steps: int = 15,
     ):
     """
     从初始图像和目标图像运行MPC控制
@@ -662,6 +701,7 @@ def run_mpc_from_images(
     cx = None
     cy = None
     use_json_camera = False
+    initial_control = None
     
     if transforms_json_path and os.path.exists(transforms_json_path):
         print(f"  Loading JSON file: {transforms_json_path}")
@@ -670,17 +710,26 @@ def run_mpc_from_images(
         with open(transforms_json_path, 'r') as f:
             transforms_data = json.load(f)
         
-        # 直接使用第一个相机参数（MPC不需要frame信息，只需要相机位姿）
         cameras_meta = transforms_data.get('cameras', [])
+        frames = transforms_data.get('frames', [])
         
-        if cameras_meta:
-            camera_meta = cameras_meta[0]  # 使用第一个相机
+        image_filename = os.path.basename(initial_image_path)
+        matched_frame = None
+        for frame in frames:
+            frame_file_path = frame.get('file_path', '')
+            frame_filename = os.path.basename(frame_file_path)
+            if os.path.splitext(frame_filename)[0] == os.path.splitext(image_filename)[0]:
+                matched_frame = frame
+                break
+            if image_filename in frame_file_path or frame_file_path in image_filename:
+                matched_frame = frame
+                break
+        
+        if matched_frame and cameras_meta:
+            camera_idx = matched_frame.get('camera_idx', 0)
+            camera_meta = cameras_meta[camera_idx]
             
-            # 直接使用transform_matrix，不在这里应用R_x_180
-            # R_x_180会在_create_camera方法中统一处理
             transform_matrix = np.array(camera_meta['transform_matrix'], dtype=np.float32)
-            
-            # 提取焦距和主点
             focal_x = camera_meta.get('fl_x') or camera_meta.get('focal_length')
             focal_y = camera_meta.get('fl_y') or camera_meta.get('focal_length')
             cx = camera_meta.get('cx', image_width / 2.0)
@@ -688,55 +737,27 @@ def run_mpc_from_images(
             
             use_json_camera = True
             print(f"  ✓ Loaded camera from JSON:")
-            print(f"    - Using first camera (index 0)")
+            print(f"    - Using camera index {camera_idx} (matched from frame)")
             print(f"    - Focal length: fx={focal_x:.2f}, fy={focal_y:.2f}")
             print(f"    - Principal point: cx={cx:.2f}, cy={cy:.2f}")
             print(f"    - Transform matrix (c2w):")
             for row in transform_matrix:
                 print(f"      [{', '.join([f'{x:8.4f}' for x in row])}]")
+            
+            if 'joint_pos' in matched_frame:
+                initial_control = np.array(matched_frame['joint_pos'], dtype=np.float32)
+                print(f"  ✓ Loaded initial control from frame: {matched_frame.get('file_path', 'unknown')}")
+                print(f"    Joint pos (first 6): [{', '.join([f'{x:.4f}' for x in initial_control[:6]])}]")
+                if len(initial_control) > 6:
+                    print(f"    Control dim: {len(initial_control)}")
         else:
-            print(f"  ⚠ No cameras found in JSON, using manual parameters")
+            print(f"  ⚠ No matching frame or cameras found in JSON, using manual parameters")
     else:
         print(f"  ⚠ No transforms.json provided, using manual camera parameters")
     
-    # 4. 加载初始控制（从transforms.json的frames中读取）
     print(f"\n[4/9] Loading initial joint position from transforms.json...")
-    import json
-    initial_control = None
-
-    if transforms_json_path and os.path.exists(transforms_json_path):
-        with open(transforms_json_path, 'r') as f:
-            transforms_data = json.load(f)
-
-        frames = transforms_data.get('frames', [])
-        image_filename = os.path.basename(initial_image_path)
-
-        # 查找匹配的frame
-        matched_frame = None
-        for frame in frames:
-            frame_file_path = frame.get('file_path', '')
-            frame_filename = os.path.basename(frame_file_path)
-
-            # 匹配文件名（去掉扩展名比较）
-            if os.path.splitext(frame_filename)[0] == os.path.splitext(image_filename)[0]:
-                matched_frame = frame
-                break
-            # 或者完整路径包含匹配
-            if image_filename in frame_file_path or frame_file_path in image_filename:
-                matched_frame = frame
-                break
-
-        if matched_frame and 'joint_pos' in matched_frame:
-            initial_control = np.array(matched_frame['joint_pos'], dtype=np.float32)
-            print(f"  ✓ Loaded initial control from frame: {matched_frame.get('file_path', 'unknown')}")
-            print(f"    Joint pos (first 6): [{', '.join([f'{x:.4f}' for x in initial_control[:6]])}]")
-            if len(initial_control) > 6:
-                print(f"    Control dim: {len(initial_control)}")
-        else:
-            print(f"  ⚠ No matching frame or joint_pos found for '{image_filename}', using zero control")
-            initial_control = np.zeros(control_dim, dtype=np.float32)
-    else:
-        print(f"  ⚠ No transforms.json found, using zero control")
+    if initial_control is None:
+        print(f"  ⚠ No initial control loaded, using zero control")
         initial_control = np.zeros(control_dim, dtype=np.float32)
     
     # 5. 初始化模型
@@ -798,6 +819,12 @@ def run_mpc_from_images(
         direction_loss_type=direction_loss_type,
         action_regularization_weight=action_regularization_weight,
         max_action_delta=max_action_delta,
+        optimizer_type=optimizer_type,
+        num_samples_init=num_samples_init,
+        num_samples_replan=num_samples_replan,
+        num_grad_seqs=num_grad_seqs,
+        grad_lr=grad_lr,
+        grad_steps=grad_steps,
     )
     
     print(f"  ✓ CEM config: {num_samples} samples x {opt_iters} iterations")
@@ -1414,7 +1441,7 @@ def main():
                         help='图像高度')
     parser.add_argument('--image_width', type=int, default=480,
                         help='图像宽度')
-    parser.add_argument('--log_dir', type=str, default='./outputs/flow_guided_mpc',
+    parser.add_argument('--log_dir', type=str, default='./outputs/flow_gd_mpc',
                         help='输出目录')
     parser.add_argument('--device', type=str, default='cuda:0',
                         help='计算设备 (例如: cuda:0, cuda:3, cpu)')
@@ -1423,6 +1450,21 @@ def main():
                         help='光流采样策略: uniform=均匀, adaptive=自适应(推荐), motion_only=纯运动')
     parser.add_argument('--motion_focus_ratio', type=float, default=0.7,
                         help='自适应采样中聚焦运动区域的比例 (0.0-1.0)')
+
+    # MPC优化器选择参数
+    parser.add_argument('--optimizer', type=str, default='cem-gd',
+                        choices=['cem', 'cem-gd'],
+                        help='MPC优化器类型: cem=纯CEM采样, cem-gd=CEM+梯度混合(推荐, 默认)')
+    parser.add_argument('--num_samples_init', type=int, default=200,
+                        help='CEM-GD初始规划采样数（首次规划）')
+    parser.add_argument('--num_samples_replan', type=int, default=100,
+                        help='CEM-GD重规划采样数（后续步骤）')
+    parser.add_argument('--num_grad_seqs', type=int, default=5,
+                        help='CEM-GD梯度优化的top-K序列数')
+    parser.add_argument('--grad_lr', type=float, default=0.01,
+                        help='CEM-GD梯度下降学习率（Adam）')
+    parser.add_argument('--grad_steps', type=int, default=15,
+                        help='CEM-GD梯度下降最大迭代数')
 
     # 方向指引损失参数
     parser.add_argument('--direction_weight', type=float, default=0.0,
@@ -1456,7 +1498,7 @@ def main():
                         help='transforms.json路径（用于读取joint_pos和相机参数）')
     parser.add_argument('--save_video', action='store_true',
                         help='保存渲染序列为视频(GIF/MP4)')
-    parser.add_argument('--video_fps', type=int, default=10,
+    parser.add_argument('--video_fps', type=int, default=3,
                         help='视频帧率')
     
     args = parser.parse_args()
@@ -1507,6 +1549,12 @@ def main():
         max_action_delta=args.max_action_delta,
         use_motion_mask=args.use_motion_mask,
         motion_threshold_percentile=args.motion_threshold_percentile,
+        optimizer_type=args.optimizer,
+        num_samples_init=args.num_samples_init,
+        num_samples_replan=args.num_samples_replan,
+        num_grad_seqs=args.num_grad_seqs,
+        grad_lr=args.grad_lr,
+        grad_steps=args.grad_steps,
     )
 
 

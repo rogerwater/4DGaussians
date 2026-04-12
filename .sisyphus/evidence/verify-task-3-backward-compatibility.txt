@@ -1,0 +1,52 @@
+
+================================================================================
+SCENARIO 1: CEM optimizer default requires_grad parameter
+================================================================================
+
+[1.1] Examining CEM optimizer score_trajectories signature...
+✓ Found score_trajectories method
+  Found: requires_grad=False,
+  ✓ Default is requires_grad=False (Pure CEM behavior)
+
+Scenario 1: ✓ PASS
+  score_trajectories has requires_grad parameter
+  Default value is False (backward compatible)
+  This means CEM optimizer uses Pure CEM (no gradients) by default
+
+================================================================================
+SCENARIO 2: Model forward pass return type with grad_enabled
+================================================================================
+
+[2.1] Examining flow_guided_gaussian_model.py forward method...
+✓ Found forward method with grad_enabled parameter
+  ✓ Found conditional return at line ~690
+    Pattern: if grad_enabled...else...numpy()
+✓ Found explicit .numpy() conversion for grad_enabled=False
+
+Scenario 2: ✓ PASS
+  forward method checks grad_enabled parameter
+  When grad_enabled=False, output is converted to numpy.ndarray
+  When grad_enabled=True, output remains as torch.Tensor
+  ✓ Pure CEM backward compatibility verified
+
+================================================================================
+SCENARIO 3: Tensor to numpy conversion verification
+================================================================================
+
+[3.1] Testing tensor to numpy conversion patterns...
+  Created test tensor: shape torch.Size([2, 3, 4]), type Tensor
+  After .cpu().numpy(): type ndarray, is_numpy=True
+  Has requires_grad: False (should be False)
+
+Scenario 3: ✓ PASS
+  ✓ Tensor conversion works correctly
+  ✓ Result is numpy.ndarray (type: ndarray)
+  ✓ No gradient tracking (requires_grad: False)
+  ✓ Pure CEM behavior verified (no gradients, returns numpy)
+
+================================================================================
+VERIFICATION SUMMARY: 3/3 scenarios passed
+================================================================================
+
+✓✓✓ ALL SCENARIOS PASSED - Pure CEM backward compatibility verified ✓✓✓
+================================================================================

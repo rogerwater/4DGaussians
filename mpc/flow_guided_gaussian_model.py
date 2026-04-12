@@ -507,6 +507,12 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
                 - 'sparse_rgb': (B, T, H, W, 3) - 稀疏渲染（如果启用）
         """
         actions = batch['actions']
+        if isinstance(actions, np.ndarray):
+            actions = torch.from_numpy(actions)
+        if isinstance(actions, torch.Tensor):
+            actions = actions.to(self.device).float()
+        else:
+            raise TypeError(f"Unsupported actions type: {type(actions)}")
         B, T_total, _ = actions.shape
         T = T_total - self.num_context + 1  # 实际预测的时间步数
         
@@ -553,11 +559,8 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
 
         # 逐步预测
         for t in range(T):
-            control_vec = torch.tensor(
-                pred_actions[:, t], 
-                dtype=torch.float32, 
-                device=self.device
-            )
+            # 保留梯度：直接转换而非创建新tensor
+            control_vec = pred_actions[:, t].to(self.device).float()
             
             # 1. 光流预测
             if self.enable_flow_prediction:

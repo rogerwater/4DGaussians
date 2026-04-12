@@ -1,0 +1,61 @@
+=======================================================================
+TASK 3: Update utils/triplane_film_analyzer.py
+=======================================================================
+
+MODIFICATIONS SUMMARY:
+- 6 replacements of control_processor → action_processor
+- 2 replacements of control_feat → action_feat variable names
+
+DETAILED CHANGES:
+
+Line 79: Attribute assignment
+  OLD: self.control_processor = inner_net.control_processor
+  NEW: self.action_processor = inner_net.action_processor
+
+Line 177: Method call in analyze_action_encoding()
+  OLD: action_features = self.control_processor(actions)
+  NEW: action_features = self.action_processor(actions)
+
+Line 255: Method call in analyze_film_modulation() + variable rename
+  OLD: control_feat = self.control_processor(actions)
+  NEW: action_feat = self.action_processor(actions)
+
+Line 277: Variable reference in analyze_film_modulation()
+  OLD: film_params = film_layer.film_generator(control_feat)
+  NEW: film_params = film_layer.film_generator(action_feat)
+
+Line 338: Method call in _compute_layer_contribution() + variable rename
+  OLD: control_feat = self.control_processor(actions)
+  NEW: action_feat = self.action_processor(actions)
+
+Line 345: Variable reference in _compute_layer_contribution()
+  OLD: h_out = film_block(h, control_feat)
+  NEW: h_out = film_block(h, action_feat)
+
+Line 392: Method call in analyze_spatial_action_correlation()
+  OLD: action_feats = self.control_processor(actions)
+  NEW: action_feats = self.action_processor(actions)
+
+Line 418: Method call in analyze_spatial_action_correlation()
+  OLD: action_grid = self.control_processor(act_grid)
+  NEW: action_grid = self.action_processor(act_grid)
+
+VERIFICATION:
+✓ grep "control_processor" returns 0 matches
+✓ grep "action_processor" returns 6 matches (lines 79, 177, 255, 338, 392, 418)
+✓ Python syntax check: PASS
+✓ All control_feat variables renamed to action_feat
+✓ All methods preserve original logic and functionality
+✓ No changes to method signatures or interfaces
+
+ANALYSIS LOGIC: UNCHANGED
+- analyze_spatial_features() - unchanged
+- analyze_action_encoding() - only attribute/variable names changed
+- analyze_film_modulation() - only attribute/variable names changed
+- _compute_layer_contribution() - only attribute/variable names changed
+- analyze_spatial_action_correlation() - only attribute/variable names changed
+- All visualization methods - unchanged
+- All sampling methods - unchanged
+
+STATUS: ✓ COMPLETE
+=======================================================================

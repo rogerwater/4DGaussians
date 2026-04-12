@@ -2,6 +2,8 @@
 
 This document provides guidelines for AI coding agents working in the 4DGaussians codebase - a CVPR 2024 research project for 4D Gaussian Splatting for real-time dynamic scene rendering.
 
+**📋 IMPORTANT**: Check `.sisyphus/MODIFICATIONS_INDEX.md` for recent codebase modifications and their changelogs.
+
 ## Project Overview
 
 4DGaussians is a **research-grade computer vision project** that extends 3D Gaussian Splatting to dynamic scenes using space-time feature grids (HexPlane/TriPlane architectures). The codebase includes:
@@ -330,3 +332,24 @@ ModelParams.resolution = 2  # Override parent value
 | Check model size | `python scripts/cal_modelsize.py --path output/dnerf/lego/` |
 
 **When in doubt**: Check existing code in `train.py`, `scene/gaussian_model.py`, or reference configs in `arguments/dnerf/`.
+
+## 工作规则
+
+### 沟通
+
+- 中文沟通
+- 回答简洁高效，不要过度解释，展现出对哪些文件进行了什么修改
+
+### 工作习惯
+- 进行测试时激活conda环境Gaussians4D
+- 复杂改动时先进行方案的构建，简单任务直接进行
+- 修改超过3个文件时先拆成多个小任务
+- 简单修改（修改少于3个文件，总代码修改量少于10行）直接在进行debug计划时告诉我应该修改哪些代码
+
+### 编码
+
+- 修改代码时保持原有风格
+
+### 边界
+
+- 不要自动进行代码的提交和推送

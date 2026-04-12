@@ -105,8 +105,8 @@ class PointTracker:
         # TAPIR internally resizes all frames to self.resolution, so coordinates
         # MUST be in that coordinate system. If mismatch, we need to scale coords.
         if (H, W) != self.resolution:
-            print(f"[PointTracker] WARNING: Input video resolution ({H}x{W}) differs from "
-                  f"TAPIR resolution {self.resolution}. Scaling coordinates accordingly.")
+            # print(f"[PointTracker] WARNING: Input video resolution ({H}x{W}) differs from "
+                  # f"TAPIR resolution {self.resolution}. Scaling coordinates accordingly.")
             # Scale coordinates to match TAPIR's expected resolution
             scale_x = self.resolution[1] / W  # width scale
             scale_y = self.resolution[0] / H  # height scale
@@ -199,7 +199,7 @@ class PointTracker:
         if needs_rescale:
             all_tracks[:, :, :, 0] *= scale_back_x  # x coordinates
             all_tracks[:, :, :, 1] *= scale_back_y  # y coordinates
-            print(f"[PointTracker] Scaled output coordinates back to {H}x{W}")
+            #print(f"[PointTracker] Scaled output coordinates back to {H}x{W}")
 
         # Convert to torch
         tracks_tensor = torch.from_numpy(all_tracks).to(self.device).float()

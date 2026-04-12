@@ -1,0 +1,36 @@
+# Task 2 验证报告：导入与实例化
+
+## ✅ 导入语句 (Line 7)
+FROM: from scene.triplane import TriPlaneField, ControlProcessor
+TO:   from scene.triplane import TriPlaneField, ActionProcessor
+
+## ✅ 参数读取与变量初始化 (Lines 187-192)
+- action_use_pe = getattr(args, 'action_use_pe', True)
+- action_num_freq = getattr(args, 'action_num_frequencies', 4)
+- action_input_dim = getattr(args, 'action_input_dim', 6)
+- action_hidden = getattr(args, 'action_hidden_dim', 128)
+- action_output_dim = getattr(args, 'action_output_dim', 64)
+
+## ✅ 实例化 (Lines 194-200)
+FROM: self.control_processor = ControlProcessor(...)
+TO:   self.action_processor = ActionProcessor(
+          input_dim=action_input_dim,
+          use_pe=action_use_pe,
+          num_frequencies=action_num_freq,
+          hidden_dim=action_hidden,
+          output_dim=action_output_dim
+      )
+
+## ✅ 属性引用 (Line 206)
+FROM: self.control_dim = self.control_processor.output_dim
+TO:   self.action_dim = self.action_processor.output_dim
+
+## ✅ FiLM Decoder 传参 (Line 214)
+FROM: control_dim=self.control_dim,
+TO:   control_dim=self.action_dim,
+
+## ✅ Print 语句 (Line 243)
+FROM: print(f"[DeformationTriPlane]   - Control dim: {self.control_dim}")
+TO:   print(f"[DeformationTriPlane]   - Action dim: {self.action_dim}")
+
+状态: 全部完成 ✅

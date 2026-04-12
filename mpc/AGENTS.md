@@ -54,9 +54,10 @@ u = [u₀, u₁, u₂, ..., u₁₄]  ∈ ℝ¹⁵
 ```
 
 **Action constraints in MPC:**
-- Actions are clipped to [-action_limit, action_limit] per dimension
-- Typical action_limit: 0.3-0.8 (prevents large sudden movements)
-- Dynamics model applies these controls to deform 4D Gaussians
+- Joint dimensions (0-11) represent absolute state in sin/cos and must not be clipped
+- Gripper dimensions (12-14) are clipped to [-1, 1]
+- Angular velocity is constrained via Δθ between timesteps (default 0.524 rad ≈ 30°)
+- Use `mpc.constraint_utils.check_angular_velocity_constraint` for enforcement
 
 ## STRUCTURE
 
@@ -84,9 +85,87 @@ mpc/
 
 ### Optimizers
 - **CEM** (cem.py) - Cross-Entropy Method (sample-based)
-- **CEM+GD** (cem_gd.py) - Hybrid sample + gradient
+- **CEM-GD** (cem_gd.py) - Hybrid sample + gradient (recommended for most use cases)
 - **MPPI** (mppi.py) - Model Predictive Path Integral
 - **L-BFGS** (lbfgs.py) - Second-order optimizer
+  - Deprecated for joint-state planning (action clipping bug), use CEM/MPPI
+
+#### CEM vs CEM-GD: When to Use Which
+
+| Optimizer | Best For | Sample Efficiency | Convergence Speed | Computational Cost |
+|-----------|----------|-------------------|-------------------|--------------------|
+| **CEM** | Simple objectives, quick prototyping | Baseline (1×) | Baseline (5-7 iters) | Low |
+| **CEM-GD** | Production use, complex objectives | 5-10× better | 3× faster (2-3 iters) | Medium (+30% overhead) |
+
+**Recommendation**: Use **CEM-GD** by default. Switch to CEM only if:
+- Objective is non-differentiable
+- Gradient computation is prohibitively expensive
+- Prototyping/debugging (CEM is simpler)
+
+#### CEM-GD Hyperparameters
+
+**Core Parameters**:
+- `num_samples_init`: Initial planning samples (default: 200)
+  - Use 200-300 for first planning step (more exploration needed)
+  - Higher values improve initial solution quality
+  
+- `num_samples_replan`: Replanning samples (default: 100)
+  - Use 100-150 for subsequent MPC steps (warm start from previous plan)
+  - Can be lower than `num_samples_init` due to warm start
+  
+- `opt_iters`: CEM iterations before gradient descent (default: 2-3)
+  - 2-3 iterations sufficient with gradient refinement
+  - Pure CEM typically needs 5-7 iterations
+  
+- `num_grad_seqs`: Top-K sequences for gradient optimization (default: 5)
+  - 5-10 sequences balance exploration vs computation
+  - Higher values = more diverse gradient descent initializations
+  
+- `grad_lr`: Adam learning rate for gradient descent (default: 0.01)
+  - 0.01 works well for most objectives
+  - Lower (0.001-0.005) for sensitive objectives
+  - Higher (0.02-0.05) for coarse objectives
+  
+- `grad_steps`: Gradient descent iterations (default: 15)
+  - 10-20 steps typical for convergence
+  - Monitor convergence in logs - may reduce for faster planning
+
+**Advanced Parameters** (in `CEMGDOptimizer.__init__`):
+- `elites_frac`: Top fraction for CEM refit (default: 0.1)
+- `alpha`: CEM distribution smoothing (default: 0.1)
+- `factor_shrink`: Learning rate decay factor (default: 0.5)
+- `max_tries`: Max learning rate reduction attempts (default: 3)
+
+**Example Configurations**:
+
+```python
+# Fast prototyping (lower quality, faster)
+optimizer_type='cem-gd',
+num_samples_init=100,
+num_samples_replan=50,
+opt_iters=2,
+num_grad_seqs=3,
+grad_lr=0.01,
+grad_steps=10,
+
+# Production (balanced quality/speed) - DEFAULT
+optimizer_type='cem-gd',
+num_samples_init=200,
+num_samples_replan=100,
+opt_iters=3,
+num_grad_seqs=5,
+grad_lr=0.01,
+grad_steps=15,
+
+# High quality (slower, best results)
+optimizer_type='cem-gd',
+num_samples_init=300,
+num_samples_replan=150,
+opt_iters=3,
+num_grad_seqs=10,
+grad_lr=0.005,
+grad_steps=20,
+```
 
 ### Dynamics Models
 - **GaussianDynamicsModel** - Wraps GaussianModel for planning
@@ -137,14 +216,45 @@ bash run_render_based_test.sh  # Uses defaults
 ```
 
 ### Manual Invocation
-```python
+
+**CEM-GD Mode (Default, Recommended)**:
+```bash
 python demo_flow_guided_mpc.py \
   --model_path output/<exp>/ \
   --initial_image <initial.png> \
   --target_image <target.png> \
   --num_steps 20 \
   --horizon 10 \
+  --optimizer cem-gd \
+  --num_samples_init 200 \
+  --num_samples_replan 100 \
+  --num_grad_seqs 5 \
+  --grad_lr 0.01 \
+  --grad_steps 15 \
   --device cuda:0
+```
+
+**Pure CEM Mode (Backward Compatible)**:
+```bash
+python demo_flow_guided_mpc.py \
+  --model_path output/<exp>/ \
+  --initial_image <initial.png> \
+  --target_image <target.png> \
+  --num_steps 20 \
+  --horizon 10 \
+  --optimizer cem \
+  --num_samples 1000 \
+  --opt_iters 10 \
+  --device cuda:0
+```
+
+**Benchmark CEM vs CEM-GD**:
+```bash
+python test/scripts/benchmark_cem_vs_cemgd.py \
+  --model_path output/dnerf/lego \
+  --initial initial.png \
+  --target target.png \
+  --output benchmark_results.json
 ```
 
 ### Config-Based (Hydra)

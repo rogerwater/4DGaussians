@@ -1,0 +1,71 @@
+================================================================================
+CHECKPOINT LOADING VERIFICATION - Task 1
+================================================================================
+
+[1] Loading checkpoint from: /home/ubuntu/yyf/4DGaussians/outputs/dm_control_push8/point_cloud/iteration_20000/deformation.pth
+✓ Checkpoint loaded successfully
+  Checkpoint keys: ['pos_poc', 'rotation_scaling_poc', 'opacity_poc', 'deformation_net.triplane.aabb', 'deformation_net.triplane.grids.0.0']...
+
+[2] Creating deformation network with TriPlane architecture
+[Factory] Creating TriPlane-based deformation network
+[Factory]   - Spatial encoding: 3 planes (XY, XZ, YZ)
+[Factory]   - Control injection: Direct to decoder
+[TriPlaneField] Initialized with 3 scales
+[TriPlaneField] Feature dimension: 96
+[TriPlaneField] Resolutions: [128, 128, 128, 256, 256, 256, 512, 512, 512]
+[ActionProcessor] Input: 15 → PE: 15 → MLP → Output: 32
+[MultiHeadFiLMDecoder] Created with 3 FiLM blocks (each with internal residual)
+[MultiHeadFiLMDecoder]   Spatial: 96 → Control: 32 → Hidden: 128
+[MultiHeadFiLMDecoder]   FiLM hidden dim: 128
+[DeformationTriPlane] Using Multi-head FiLM fusion
+[DeformationTriPlane]   - Spatial dim: 96
+[DeformationTriPlane]   - Action dim: 32
+[DeformationTriPlane]   - FiLM layers: 3
+[DeformationTriPlane]   - Hidden dim: 128
+[deform_network_triplane] Initialized with TriPlane + Multi-head FiLM Fusion
+✓ Deformation network created successfully
+  Network type: deform_network_triplane
+
+[3] Loading state_dict with strict=True
+✓ State dict loaded
+  Missing keys: 0
+  Unexpected keys: 0
+✓ STRICT LOAD: 0 missing keys, 0 unexpected keys
+
+[4] Verifying ActionProcessor MLP layer shapes
+  ActionProcessor type: ActionProcessor
+  MLP structure: Sequential(
+  (0): Linear(in_features=15, out_features=128, bias=True)
+  (1): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  (2): ReLU(inplace=True)
+  (3): Linear(in_features=128, out_features=128, bias=True)
+  (4): LayerNorm((128,), eps=1e-05, elementwise_affine=True)
+  (5): ReLU(inplace=True)
+  (6): Linear(in_features=128, out_features=32, bias=True)
+)
+
+  Layer 0 (input):
+    Shape: torch.Size([128, 15])
+    Expected: (128, 15)
+    ✓ PASS
+
+  Layer 6 (output):
+    Shape: torch.Size([32, 128])
+    Expected: (32, 128)
+    ✓ PASS
+
+✓ ALL ActionProcessor shape verifications PASSED
+
+================================================================================
+VERIFICATION RESULT: PASS ✓
+================================================================================
+
+Summary:
+  ✓ Checkpoint loaded successfully
+  ✓ Deformation network created (TriPlane architecture)
+  ✓ State dict loaded with 0 missing and 0 unexpected keys
+  ✓ ActionProcessor MLP layer shapes verified:
+    - Layer 0: torch.Size([128, 15]) (expected (128, 15))
+    - Layer 6: torch.Size([32, 128]) (expected (32, 128))
+
+Conclusion: ActionProcessor default values fix is CORRECT

@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import time
+import warnings
 
 from mpc.optimizer import Optimizer
 from mpc.utils import ObservationList, write_moviepy_gif, dict_to_numpy
@@ -19,6 +20,12 @@ class LBFGSOptimizer(Optimizer):
         line_search_fn=None,
         log_every=1,
     ):
+        warnings.warn(
+            "LBFGSOptimizer is deprecated: action clipping corrupts joint state sin/cos pairs. "
+            "Use CEM or MPPI instead. See .sisyphus/docs/action-constraint-fix-decisions.md (Decision 3).",
+            UserWarning,
+            stacklevel=2,
+        )
         self.obj_fn = objective
         self.model = model
         self.horizon = horizon

@@ -120,9 +120,11 @@ class FlowAlignmentObjective(Objective):
         # 转换为奖励（使用负指数）
         reward = -avg_distance  # 或 torch.exp(-avg_distance / temperature)
         
-        # 转换为numpy以与其他Objective保持一致
-        reward = reward.cpu().numpy() if isinstance(reward, torch.Tensor) else reward
-        return reward[:, None, None]  # (B, 1, 1)
+        # 保持tensor以支持梯度反向传播（为backward compatibility保留numpy路径）
+        if isinstance(reward, torch.Tensor):
+            return reward.view(-1, 1, 1)  # (B, 1, 1) - 保留梯度
+        else:
+            return np.expand_dims(reward, (1, 2))  # numpy路径
     
     def _chamfer_distance(
         self,
@@ -218,9 +220,11 @@ class FlowConsistencyObjective(Objective):
         avg_smoothness = smoothness.mean(dim=(1, 2))  # (B,)
         reward = -avg_smoothness
 
-        # 转换为numpy以与其他Objective保持一致
-        reward = reward.cpu().numpy() if isinstance(reward, torch.Tensor) else reward
-        return reward[:, None, None]
+        # 保持tensor以支持梯度反向传播（为backward compatibility保留numpy路径）
+        if isinstance(reward, torch.Tensor):
+            return reward.view(-1, 1, 1)  # (B, 1, 1) - 保留梯度
+        else:
+            return np.expand_dims(reward, (1, 2))  # numpy路径
 
 
 class FlowDirectionGuidanceObjective(Objective):
@@ -372,9 +376,11 @@ class FlowDirectionGuidanceObjective(Objective):
         # 最终奖励：方向一致性优先，大小一致性作为辅助
         reward = avg_direction * 0.7 + avg_magnitude * 0.3
 
-        # 转换为numpy
-        reward = reward.cpu().numpy() if isinstance(reward, torch.Tensor) else reward
-        return reward[:, None, None]
+        # 保持tensor以支持梯度反向传播（为backward compatibility保留numpy路径）
+        if isinstance(reward, torch.Tensor):
+            return reward.view(-1, 1, 1)  # (B, 1, 1) - 保留梯度
+        else:
+            return np.expand_dims(reward, (1, 2))  # numpy路径
 
 
 class FlowDirectionLoss(Objective):
@@ -516,9 +522,11 @@ class FlowDirectionLoss(Objective):
         # 返回loss（越小越好，奖励为负loss）
         reward = -avg_loss
 
-        # 转换为numpy
-        reward = reward.cpu().numpy() if isinstance(reward, torch.Tensor) else reward
-        return reward[:, None, None]
+        # 保持tensor以支持梯度反向传播（为backward compatibility保留numpy路径）
+        if isinstance(reward, torch.Tensor):
+            return reward.view(-1, 1, 1)  # (B, 1, 1) - 保留梯度
+        else:
+            return np.expand_dims(reward, (1, 2))  # numpy路径
 
 
 class FlowGuidanceWithTargetObjective(Objective):
@@ -643,8 +651,11 @@ class FlowGuidanceWithTargetObjective(Objective):
         # 奖励 = -距离
         reward = -avg_distance
 
-        reward = reward.cpu().numpy() if isinstance(reward, torch.Tensor) else reward
-        return reward[:, None, None]
+        # 保持tensor以支持梯度反向传播（为backward compatibility保留numpy路径）
+        if isinstance(reward, torch.Tensor):
+            return reward.view(-1, 1, 1)  # (B, 1, 1) - 保留梯度
+        else:
+            return np.expand_dims(reward, (1, 2))  # numpy路径
 
 
 class FlowSparseRenderObjective(Objective):
@@ -732,7 +743,11 @@ class FlowSparseRenderObjective(Objective):
         
         reward = -total_loss / max(len(patches_pred), 1)
         
-        return torch.tensor([reward], device=pred_rgb.device).view(1, 1, 1)
+        # 保持tensor以支持梯度反向传播（为backward compatibility保留numpy路径）
+        if isinstance(reward, torch.Tensor):
+            return reward.view(1, 1, 1)
+        else:
+            return torch.tensor(reward, device=pred_rgb.device).view(1, 1, 1)
 
 
 class HybridFlowImageObjective(Objective):
@@ -870,19 +885,6 @@ class ActionRegularizationObjective(Objective):
         prediction: Dict[str, torch.Tensor],
         goal: Dict[str, torch.Tensor],
     ) -> torch.Tensor:
-        """
-        计算动作正则化奖励
-        
-        Args:
-            prediction: 包含动作序列的字典
-                - 'actions': (B, T, A) - 预测的动作序列
-                - 'current_joint_pos': (B, A) - 当前关节位置（可选）
-            goal: 包含当前状态的字典
-                - 'current_joint_pos': (A,) 或 (B, A) - 当前关节位置（可选）
-        
-        Returns:
-            reward: (B, 1, 1) - 每个样本的奖励（负的惩罚）
-        """
         if 'actions' not in prediction:
             # 如果没有actions键，返回零奖励
             print(f"      [DEBUG] ActionRegularization: 'actions' key not found in prediction. Keys: {list(prediction.keys())}")
@@ -1058,6 +1060,8 @@ class ActionRegularizationObjective(Objective):
             print(f"      [WARNING] ActionRegularization: NaN or Inf detected in reward, replacing with zeros")
             reward = torch.nan_to_num(reward, nan=0.0, posinf=0.0, neginf=0.0)
         
-        # 转换为numpy
-        reward = reward.cpu().numpy() if isinstance(reward, torch.Tensor) else reward
-        return reward[:, None, None]  # (B, 1, 1)
+        # 保持tensor以支持梯度反向传播（为backward compatibility保留numpy路径）
+        if isinstance(reward, torch.Tensor):
+            return reward.view(-1, 1, 1)  # (B, 1, 1) - 保留梯度
+        else:
+            return np.expand_dims(reward, (1, 2))  # numpy路径

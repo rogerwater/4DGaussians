@@ -1,5 +1,5 @@
 import numpy as np
-from mpc.constraint_utils import project_joint_angles_torch
+from mpc.constraint_utils import project_joint_angles_torch, check_angular_velocity_constraint
 import time
 from hydra.utils import instantiate
 
@@ -157,15 +157,14 @@ class CEMOptimizer(Optimizer):
         if actions.ndim != 3 or actions.shape[-1] < 12:
             return np.zeros((actions.shape[0],), dtype=np.float32)
 
-        sin_vals = actions[..., 0:12:2]
-        cos_vals = actions[..., 1:12:2]
-        angles = np.arctan2(sin_vals, cos_vals)  # (N, T, 6)
-        deltas = angles[:, 1:] - angles[:, :-1]
-        deltas = np.arctan2(np.sin(deltas), np.cos(deltas))
-
         max_delta_rad = np.deg2rad(self.action_delta_max_deg)
-        excess = np.maximum(np.abs(deltas) - max_delta_rad, 0.0)
-        penalty = excess.sum(axis=(1, 2))
+        _, penalty = check_angular_velocity_constraint(
+            actions,
+            action_t_prev=None,
+            max_angular_velocity=max_delta_rad,
+            start_idx=0,
+            end_idx=12,
+        )
         return penalty
 
     def update_dist(self, samples, scores, mu, var):
@@ -218,8 +217,9 @@ class CEMOptimizer(Optimizer):
         if requires_grad:
             import torch
 
-            new_action_samples = torch.clip(new_action_samples, -1, 1)
             new_action_samples = project_joint_angles_torch(new_action_samples, start_idx=0, end_idx=12)
+            if new_action_samples.shape[-1] >= 15:
+                new_action_samples[..., 12:15] = torch.clamp(new_action_samples[..., 12:15], -1, 1)
             action_samples = torch.cat(
                 (
                     torch.from_numpy(context_actions).to(new_action_samples),
@@ -228,11 +228,12 @@ class CEMOptimizer(Optimizer):
                 axis=1,
             )
         else:
-            new_action_samples = np.clip(new_action_samples, -1, 1)
             import torch
             new_action_samples_torch = torch.from_numpy(new_action_samples).float()
             new_action_samples_torch = project_joint_angles_torch(new_action_samples_torch, start_idx=0, end_idx=12)
             new_action_samples = new_action_samples_torch.cpu().numpy()
+            if new_action_samples.shape[-1] >= 15:
+                new_action_samples[..., 12:15] = np.clip(new_action_samples[..., 12:15], -1, 1)
             action_samples = np.concatenate(
                 (context_actions, new_action_samples), axis=1
             )
@@ -286,9 +287,9 @@ class CEMOptimizer(Optimizer):
             else:
                 rewards = rewards - self.action_delta_penalty_weight * penalty[:, None, None]
         
-        # 转换rewards为numpy（如果是torch tensor）
+        # 转换rewards为numpy（如果是torch tensor且不需要梯度）
         import torch
-        if isinstance(rewards, torch.Tensor):
+        if isinstance(rewards, torch.Tensor) and not requires_grad:
             rewards = rewards.cpu().numpy()
         
         return predictions, rewards, action_samples

@@ -344,7 +344,7 @@ class GaussianDynamicsModel:
             control_vec=None  # 让Camera内部初始化，然后在render时override
         )
     
-    def render_with_control(self, control_vec, time=None):
+    def render_with_control(self, control_vec, time=None, grad_enabled=False):
         """
         Render the scene with given control vector and time.
         
@@ -352,6 +352,7 @@ class GaussianDynamicsModel:
             control_vec: torch.Tensor of shape [control_dim] or [1, control_dim]
                         Control input [sin(θ1), cos(θ1), ..., sin(θ6), cos(θ6), grip1, grip2, grip3]
             time: float, time value for temporal deformation (0.0 to 1.0)
+            grad_enabled: bool, if True, preserve gradients for backpropagation (default: False)
         
         Returns:
             rendered_image: torch.Tensor of shape [3, H, W] in range [0, 1]
@@ -371,7 +372,8 @@ class GaussianDynamicsModel:
         
         # Render with control override
         try:
-            with torch.no_grad():
+            if grad_enabled:
+                # Preserve gradients for gradient-based planning
                 render_pkg = render(
                     self.camera,
                     self.gaussians,
@@ -380,6 +382,17 @@ class GaussianDynamicsModel:
                     override_control_vec=control_vec,
                     stage="fine"
                 )
+            else:
+                # Disable gradients for sampling-based planning (faster)
+                with torch.no_grad():
+                    render_pkg = render(
+                        self.camera,
+                        self.gaussians,
+                        self.pipe_params,
+                        self.background,
+                        override_control_vec=control_vec,
+                        stage="fine"
+                    )
             
             rendered_image = render_pkg["render"]
             return rendered_image
@@ -400,10 +413,12 @@ class GaussianDynamicsModel:
                 - 'video': [B, T_context, H, W, C] - Context images (not used for 4DGS)
                 - 'actions': [B, T_context + T_horizon, action_dim] - Control sequences
                 - 'state_obs': list of state observations (not used)
+            grad_enabled: bool, if True, return torch.Tensor with gradients preserved
         
         Returns:
             predictions: dict containing:
-                - 'rgb': [B, T_horizon, H, W, 3] - Predicted RGB images
+                - 'rgb': [B, T_horizon, H, W, 3] (numpy) if grad_enabled=False
+                - 'rgb': [B, T_horizon, 3, H, W] (torch.Tensor) if grad_enabled=True
         
         Note:
             当前实现使用串行渲染（无法批处理）。4DGS渲染器需要为每个控制向量
@@ -432,22 +447,35 @@ class GaussianDynamicsModel:
                 control_vec = future_actions[b, t, :]  # [control_dim]
                 
                 # Render image (GPU operation)
-                if grad_enabled:
-                    rendered_image = self.render_with_control(control_vec)
-                else:
-                    with torch.no_grad():
-                        rendered_image = self.render_with_control(control_vec)
+                # Pass grad_enabled to render_with_control
+                rendered_image = self.render_with_control(control_vec, grad_enabled=grad_enabled)
                 
-                # Convert to numpy: [3, H, W] -> [H, W, 3]
-                # 注意：这里的.cpu()是必要的最小化数据传输
-                image_np = rendered_image.permute(1, 2, 0).cpu().numpy()
-                batch_predictions.append(image_np)
+                if grad_enabled:
+                    # Keep as tensor [3, H, W] for gradient flow
+                    batch_predictions.append(rendered_image)
+                else:
+                    # Convert to numpy: [3, H, W] -> [H, W, 3]
+                    # 注意：这里的.cpu()是必要的最小化数据传输
+                    image_np = rendered_image.permute(1, 2, 0).cpu().numpy()
+                    batch_predictions.append(image_np)
             
-            all_predictions.append(np.stack(batch_predictions, axis=0))
+            if grad_enabled:
+                # Stack as tensors [T_horizon, 3, H, W]
+                all_predictions.append(torch.stack(batch_predictions, axis=0))
+            else:
+                # Stack as numpy [T_horizon, H, W, 3]
+                all_predictions.append(np.stack(batch_predictions, axis=0))
         
-        predictions = {
-            'rgb': np.stack(all_predictions, axis=0)  # [B, T_horizon, H, W, 3]
-        }
+        if grad_enabled:
+            # Return torch.Tensor [B, T_horizon, 3, H, W]
+            predictions = {
+                'rgb': torch.stack(all_predictions, axis=0)
+            }
+        else:
+            # Return numpy [B, T_horizon, H, W, 3]
+            predictions = {
+                'rgb': np.stack(all_predictions, axis=0)
+            }
         
         return predictions
     

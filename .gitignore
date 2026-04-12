@@ -1,5 +1,6 @@
 *.pyc
 .vscode
+.venv
 output
 outputs
 build
@@ -13,4 +14,6 @@ submodules/
 test
 diff-gaussian-rasterization
 depth-diff-gaussian-rasterization
-simple-knn
+simple-knn\
+.claude
+.omc
