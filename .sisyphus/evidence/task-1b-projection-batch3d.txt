@@ -1,7 +1,0 @@
-CASE batch3d
-numpy shape preserved: True shape: (32, 10, 15)
-numpy 3d max abs deviation from 1: 4.440892098500626e-16
-torch shape preserved: True shape: (32, 10, 15)
-torch 3d max abs deviation from 1: 2.384185791015625e-07
-within_1e-6 numpy 3d: True
-within_1e-6 torch 3d: True

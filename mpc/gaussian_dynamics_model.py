@@ -15,12 +15,10 @@ from pathlib import Path
 # Add 4DGaussians to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from scene import Scene
 from gaussian_renderer import GaussianModel
-from gaussian_renderer import render
-from arguments import ModelParams, PipelineParams, ModelHiddenParams
 from scene.cameras import Camera
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
+from mpc.inference_renderer import InferenceRenderer
 
 
 class GaussianDynamicsModel:
@@ -51,7 +49,13 @@ class GaussianDynamicsModel:
         focal_x=None,
         focal_y=None,
         cx=None,
-        cy=None
+        cy=None,
+        renderer_backend="legacy",
+        render_execution_mode="inprocess",
+        render_batch_size=8,
+        render_cache_size=16,
+        render_mode="RGB",
+        render_dedup_key_mode="timestamp_control",
     ):
         """
         Args:
@@ -70,6 +74,12 @@ class GaussianDynamicsModel:
             focal_y: Focal length y (for transform_matrix mode)
             cx: Principal point x (for transform_matrix mode)
             cy: Principal point y (for transform_matrix mode)
+            renderer_backend: `legacy` | `gsplat` | `fast_gauss`
+            render_execution_mode: `inprocess` | `process`
+            render_batch_size: Batch size hint for inference rendering
+            render_cache_size: LRU cache size for rendered frames
+            render_mode: Default render output mode (`RGB` or `RGB+D`)
+            render_dedup_key_mode: `timestamp` or `timestamp_control`
         """
         self.device = device
         self.control_dim = control_dim
@@ -89,6 +99,14 @@ class GaussianDynamicsModel:
         self.camera_elevation = camera_elevation
         self.camera_azimuth = camera_azimuth
         self.fov_degrees = fov_degrees
+
+        # Inference renderer config
+        self.renderer_backend = renderer_backend
+        self.render_execution_mode = render_execution_mode
+        self.render_batch_size = int(render_batch_size)
+        self.render_cache_size = int(render_cache_size)
+        self.render_mode = render_mode
+        self.render_dedup_key_mode = render_dedup_key_mode
         
         # Setup model parameters
         self.model_params = self._setup_model_params(model_path)
@@ -118,6 +136,43 @@ class GaussianDynamicsModel:
         # Background color (white or black)
         bg_color = [1, 1, 1] if self.model_params.white_background else [0, 0, 0]
         self.background = torch.tensor(bg_color, dtype=torch.float32, device=device)
+
+        # Keep model init args for render worker re-instantiation.
+        self._renderer_model_kwargs = {
+            "model_path": model_path,
+            "iteration": iteration,
+            "control_dim": control_dim,
+            "image_height": image_height,
+            "image_width": image_width,
+            "device": device,
+            "camera_distance": camera_distance,
+            "camera_elevation": camera_elevation,
+            "camera_azimuth": camera_azimuth,
+            "fov_degrees": fov_degrees,
+            "transform_matrix": transform_matrix,
+            "focal_x": focal_x,
+            "focal_y": focal_y,
+            "cx": cx,
+            "cy": cy,
+            # Worker is forced to inprocess internally.
+            "renderer_backend": renderer_backend,
+            "render_execution_mode": "inprocess",
+            "render_batch_size": render_batch_size,
+            "render_cache_size": render_cache_size,
+            "render_mode": render_mode,
+            "render_dedup_key_mode": render_dedup_key_mode,
+        }
+
+        self.inference_renderer = InferenceRenderer(
+            model=self,
+            backend=renderer_backend,
+            execution_mode=render_execution_mode,
+            render_batch_size=render_batch_size,
+            render_cache_size=render_cache_size,
+            default_render_mode=render_mode,
+            dedup_key_mode=render_dedup_key_mode,
+            worker_model_kwargs=self._renderer_model_kwargs,
+        )
         
         # For MPC interface
         self.base_prediction_modality = "rgb"
@@ -126,6 +181,8 @@ class GaussianDynamicsModel:
         print(f"✓ Model loaded successfully!")
         print(f"  - Control dim: {control_dim}")
         print(f"  - Image size: {image_width}x{image_height}")
+        print(f"  - Renderer backend: {renderer_backend}")
+        print(f"  - Renderer mode: {render_execution_mode}")
         
     def _setup_model_params(self, model_path):
         """Setup model parameters from path"""
@@ -344,7 +401,42 @@ class GaussianDynamicsModel:
             control_vec=None  # 让Camera内部初始化，然后在render时override
         )
     
-    def render_with_control(self, control_vec, time=None, grad_enabled=False):
+    def _default_time_batch(self, batch_size, horizon_step=None, horizon_total=None):
+        if horizon_step is None:
+            return torch.zeros(batch_size, device=self.device, dtype=torch.float32)
+        if horizon_total is None or horizon_total <= 1:
+            t = 0.0
+        else:
+            t = float(horizon_step) / float(max(horizon_total - 1, 1))
+        return torch.full((batch_size,), t, device=self.device, dtype=torch.float32)
+
+    def render_batch_with_controls(
+        self,
+        control_batch,
+        time_batch=None,
+        grad_enabled=False,
+        render_mode=None,
+    ):
+        """
+        Inference rendering interface.
+
+        Args:
+            control_batch: [B, control_dim] or [control_dim]
+            time_batch: [B] or scalar
+            grad_enabled: preserve autograd graph when True
+            render_mode: `RGB` or `RGB+D`
+
+        Returns:
+            rendered: [B, C, H, W], where C=3 or 4
+        """
+        return self.inference_renderer.render_batch(
+            controls=control_batch,
+            time_batch=time_batch,
+            grad_enabled=grad_enabled,
+            render_mode=render_mode or self.render_mode,
+        )
+
+    def render_with_control(self, control_vec, time=None, grad_enabled=False, render_mode="RGB"):
         """
         Render the scene with given control vector and time.
         
@@ -359,49 +451,38 @@ class GaussianDynamicsModel:
         """
         if isinstance(control_vec, np.ndarray):
             control_vec = torch.from_numpy(control_vec).float()
-        
-        # 确保control_vec在正确的设备上
-        control_vec = control_vec.to(self.device)
-        
-        if control_vec.dim() == 1:
-            control_vec = control_vec.unsqueeze(0)
-        
-        # 更新camera的time参数（如果提供）
-        if time is not None:
-            self.camera.time = time
-        
-        # Render with control override
+
         try:
-            if grad_enabled:
-                # Preserve gradients for gradient-based planning
-                render_pkg = render(
-                    self.camera,
-                    self.gaussians,
-                    self.pipe_params,
-                    self.background,
-                    override_control_vec=control_vec,
-                    stage="fine"
-                )
+            control_batch = control_vec.unsqueeze(0) if control_vec.dim() == 1 else control_vec
+            if time is None:
+                time_batch = torch.zeros(control_batch.shape[0], dtype=torch.float32, device=control_batch.device)
             else:
-                # Disable gradients for sampling-based planning (faster)
-                with torch.no_grad():
-                    render_pkg = render(
-                        self.camera,
-                        self.gaussians,
-                        self.pipe_params,
-                        self.background,
-                        override_control_vec=control_vec,
-                        stage="fine"
-                    )
-            
-            rendered_image = render_pkg["render"]
-            return rendered_image
+                time_batch = torch.full(
+                    (control_batch.shape[0],),
+                    float(time),
+                    dtype=torch.float32,
+                    device=control_batch.device,
+                )
+
+            rendered = self.render_batch_with_controls(
+                control_batch=control_batch,
+                time_batch=time_batch,
+                grad_enabled=grad_enabled,
+                render_mode=render_mode,
+            )
+            out = rendered[0]
+            target_device = torch.device(self.device)
+            if out.device != target_device:
+                out = out.to(target_device)
+            if render_mode.upper().replace(" ", "") == "RGB+D":
+                return out
+            return out[:3]
         except Exception as e:
             print(f"[ERROR] Rendering failed: {e}")
             print(f"  Camera R: {self.camera.R}")
             print(f"  Camera T: {self.camera.T}")
             print(f"  Camera FovX: {np.rad2deg(self.camera.FoVx):.2f}°, FovY: {np.rad2deg(self.camera.FoVy):.2f}°")
-            print(f"  Control vec shape: {control_vec.shape}")
+            print(f"  Control vec shape: {control_batch.shape}")
             raise
     
     def __call__(self, batch, grad_enabled=False):
@@ -421,9 +502,8 @@ class GaussianDynamicsModel:
                 - 'rgb': [B, T_horizon, 3, H, W] (torch.Tensor) if grad_enabled=True
         
         Note:
-            当前实现使用串行渲染（无法批处理）。4DGS渲染器需要为每个控制向量
-            单独调用，因为控制向量影响变形网络。GPU已被充分利用（模型在GPU上，
-            每次渲染都是GPU操作）。
+            当前实现在时间维度上迭代，在每个时间步按batch一次性提交渲染请求。
+            该路径支持推理去重缓存和可选独立渲染进程（仅 grad_enabled=False）。
         """
         actions = batch['actions']  # [B, T_total, control_dim]
         B, T_total, _ = actions.shape
@@ -437,47 +517,25 @@ class GaussianDynamicsModel:
         # Only predict for future actions (skip context)
         future_actions = actions[:, T_context:, :]  # [B, T_horizon, control_dim]
         
-        # Render predictions for each batch and timestep
-        # 注意：由于4DGS渲染的特殊性，无法并行化batch维度
-        all_predictions = []
-        
-        for b in range(B):
-            batch_predictions = []
-            for t in range(T_horizon):
-                control_vec = future_actions[b, t, :]  # [control_dim]
-                
-                # Render image (GPU operation)
-                # Pass grad_enabled to render_with_control
-                rendered_image = self.render_with_control(control_vec, grad_enabled=grad_enabled)
-                
-                if grad_enabled:
-                    # Keep as tensor [3, H, W] for gradient flow
-                    batch_predictions.append(rendered_image)
-                else:
-                    # Convert to numpy: [3, H, W] -> [H, W, 3]
-                    # 注意：这里的.cpu()是必要的最小化数据传输
-                    image_np = rendered_image.permute(1, 2, 0).cpu().numpy()
-                    batch_predictions.append(image_np)
-            
+        rgb_predictions = []
+        for t in range(T_horizon):
+            control_batch = future_actions[:, t, :]  # [B, control_dim]
+            time_batch = self._default_time_batch(B, horizon_step=t, horizon_total=T_horizon)
+            rendered_batch = self.render_batch_with_controls(
+                control_batch=control_batch,
+                time_batch=time_batch,
+                grad_enabled=grad_enabled,
+                render_mode="RGB",
+            )  # [B, 3, H, W]
+
             if grad_enabled:
-                # Stack as tensors [T_horizon, 3, H, W]
-                all_predictions.append(torch.stack(batch_predictions, axis=0))
+                rgb_predictions.append(rendered_batch[:, :3])
             else:
-                # Stack as numpy [T_horizon, H, W, 3]
-                all_predictions.append(np.stack(batch_predictions, axis=0))
-        
+                rgb_predictions.append(rendered_batch[:, :3].permute(0, 2, 3, 1).cpu().numpy())
+
         if grad_enabled:
-            # Return torch.Tensor [B, T_horizon, 3, H, W]
-            predictions = {
-                'rgb': torch.stack(all_predictions, axis=0)
-            }
-        else:
-            # Return numpy [B, T_horizon, H, W, 3]
-            predictions = {
-                'rgb': np.stack(all_predictions, axis=0)
-            }
-        
-        return predictions
+            return {'rgb': torch.stack(rgb_predictions, dim=1)}
+        return {'rgb': np.stack(rgb_predictions, axis=1)}
     
     def set_camera_pose(self, R=None, T=None, FovX=None, FovY=None):
         """
@@ -515,10 +573,12 @@ class GaussianDynamicsModel:
                 self.camera.projection_matrix.unsqueeze(0)
             )
         ).squeeze(0)
+        self.inference_renderer.clear_cache()
     
     def close(self):
         """Cleanup resources"""
-        pass
+        if hasattr(self, "inference_renderer"):
+            self.inference_renderer.close()
 
 
 

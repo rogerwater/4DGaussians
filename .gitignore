@@ -14,6 +14,7 @@ submodules/
 test
 diff-gaussian-rasterization
 depth-diff-gaussian-rasterization
-simple-knn\
+simple-knn
 .claude
 .omc
+.sisyphus

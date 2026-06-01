@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""
-Point Tracking MPC Demo using TAPIR (from im2flow2act)
-"""
+"""Main entrypoint for point-tracking-based MPC planning."""
 
 import os
 import sys
@@ -55,23 +53,15 @@ def parse_device_early():
             if device.startswith('cuda'):
                 device_id = device.split(':')[1] if ':' in device else '0'
                 os.environ['CUDA_VISIBLE_DEVICES'] = device_id
-                print(f"[Device Mapping] Requested device: {device}")
-                print(f"[Device Mapping] Set CUDA_VISIBLE_DEVICES={device_id}")
-                print(f"[Device Mapping] PyTorch will use: cuda:0 (mapped to physical GPU {device_id})")
                 return 'cuda:0', device_id
 
     existing_visible = os.environ.get('CUDA_VISIBLE_DEVICES')
     if existing_visible:
         primary_device = existing_visible.split(',')[0].strip()
-        print(f"[Device Mapping] Using existing CUDA_VISIBLE_DEVICES={existing_visible}")
-        print(f"[Device Mapping] PyTorch will use: cuda:0 (mapped to physical GPU {primary_device})")
         return 'cuda:0', (primary_device if primary_device else '0')
 
     best_device_id = _pick_least_used_gpu(default_device_id='0')
     os.environ['CUDA_VISIBLE_DEVICES'] = best_device_id
-    print(f"[Device Mapping] Auto-selected GPU: {best_device_id}")
-    print(f"[Device Mapping] Set CUDA_VISIBLE_DEVICES={best_device_id}")
-    print(f"[Device Mapping] PyTorch will use: cuda:0 (mapped to physical GPU {best_device_id})")
     return 'cuda:0', best_device_id
 
 actual_device, actual_device_id = parse_device_early()
@@ -92,6 +82,10 @@ from mpc.objectives import CombinedObjective
 from mpc.utils import ObservationList
 from mpc.agent import SimplePlanningAgent
 from mpc import point_sampling
+
+def _log(verbose: bool, message: str):
+    if verbose:
+        print(message)
 
 def load_image(image_path, target_size=(256, 256)):
     img = Image.open(image_path).convert('RGB')
@@ -124,7 +118,7 @@ def visualize_points(image, points, color=(0, 255, 0), radius=2):
             cv2.circle(vis, (x, y), radius, color, -1)
     return vis
 
-def run_cotracker_mpc(
+def run_point_tracking_mpc(
     model_path: str,
     iteration: int,
     initial_image_path: str,
@@ -150,22 +144,26 @@ def run_cotracker_mpc(
     gradient_device: str = None,
     sampling_method: str = "motion_mask",
     action_limit: float = 1.0,
-    resample_motion_mask_per_step: bool = False,
+    renderer_backend: str = "gsplat",
+    render_execution_mode: str = "process",
+    render_batch_size: int = 8,
+    render_cache_size: int = 16,
+    render_mode: str = "RGB",
+    render_dedup_key_mode: str = "timestamp_control",
+    verbose: bool = False,
 ):
     device = actual_device
     
     os.makedirs(log_dir, exist_ok=True)
     
-    print("="*70)
-    print("Point Tracking MPC (TAPIR)")
-    print("="*70)
+    print("Point Tracking MPC")
     
     # 1. Initialize Tracker
-    print("Initializing PointTracker (TAPIR)...")
+    _log(verbose, "Initializing point tracker...")
     tracker = PointTracker(device=device)
     
     # 2. Load Images
-    print("Loading images...")
+    _log(verbose, "Loading images...")
     initial_image = load_image(initial_image_path, (image_height, image_width))
     target_image = load_image(target_image_path, (image_height, image_width))
     
@@ -174,17 +172,9 @@ def run_cotracker_mpc(
     Image.fromarray((target_image * 255).astype(np.uint8)).save(os.path.join(log_dir, "target_image.png"))
     
     # 3. Setup Tracking Points
-    print("Setting up tracking points...")
-    print(f"  Using sampling method: {sampling_method}")
+    _log(verbose, f"Sampling tracking points with method={sampling_method}...")
     
-    if sampling_method == "sobel_hybrid":
-        initial_points = sample_object_focused_points(
-            initial_image, 
-            num_points=num_tracking_points,
-            object_ratio=0.7
-        )
-        sampling_desc = "70% object-focused (Sobel+hybrid)"
-    elif sampling_method == "shi_tomasi":
+    if sampling_method == "shi_tomasi":
         initial_points = point_sampling.sample_shi_tomasi_points(
             initial_image, 
             num_points=num_tracking_points
@@ -209,7 +199,6 @@ def run_cotracker_mpc(
         initial_points = sample_grid_points(image_height, image_width, num_points=num_tracking_points)
         sampling_desc = "Uniform grid"
     elif sampling_method == "motion_mask":
-        print("  Computing bidirectional flow with consistency check...")
         motion_mask, flow_forward, flow_magnitude, consistency_mask = \
             point_sampling.adaptive_motion_mask_with_consistency(
                 initial_image,
@@ -220,10 +209,6 @@ def run_cotracker_mpc(
                 consistency_threshold=3.0,
                 morphology_kernel_size=5
             )
-        
-        print(f"  Consistency: {consistency_mask.sum()}/{consistency_mask.size} pixels ({consistency_mask.mean()*100:.1f}%)")
-        print(f"  Motion mask: {motion_mask.sum()}/{motion_mask.size} pixels ({motion_mask.mean()*100:.1f}%)")
-        print(f"  Flow magnitude: mean={flow_magnitude[motion_mask].mean():.1f}px, max={flow_magnitude.max():.1f}px")
         
         motion_coords = np.column_stack(np.where(motion_mask))
         motion_points_candidates = motion_coords[:, [1, 0]].astype(np.float32)
@@ -255,62 +240,35 @@ def run_cotracker_mpc(
         
         initial_points = np.vstack([motion_points, corner_points])
         
-        import matplotlib.pyplot as plt
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        
-        axes[0].imshow(flow_magnitude, cmap='hot')
-        axes[0].set_title(f'Flow Magnitude (max={flow_magnitude.max():.1f}px)')
-        axes[0].axis('off')
-        
-        axes[1].imshow(consistency_mask, cmap='gray')
-        axes[1].set_title(f'Consistency Mask ({consistency_mask.mean()*100:.1f}%)')
-        axes[1].axis('off')
-        
-        axes[2].imshow(initial_image)
-        axes[2].imshow(motion_mask, alpha=0.3, cmap='Reds')
-        axes[2].scatter(motion_points[:, 0], motion_points[:, 1], c='red', s=10, label=f'Motion ({len(motion_points)})')
-        axes[2].scatter(corner_points[:, 0], corner_points[:, 1], c='blue', s=10, label=f'Corners ({len(corner_points)})')
-        axes[2].set_title('Sampled Points on Motion Mask')
-        axes[2].legend()
-        axes[2].axis('off')
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(log_dir, "01_biflow_initialization.png"), dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"  Saved: 01_biflow_initialization.png")
-        
         sampling_desc = f"Bidirectional flow (motion={len(motion_points)}, corners={len(corner_points)})"
     else:
         raise ValueError(f"Unknown sampling method: {sampling_method}")
     
-    print(f"  Sampled {len(initial_points)} tracking points ({sampling_desc})")
+    print(f"Tracking points: {len(initial_points)} ({sampling_desc})")
     
     # Visualize initial points
     vis_initial = visualize_points(initial_image, initial_points, color=(255, 0, 0), radius=3)
     Image.fromarray(vis_initial).save(os.path.join(log_dir, "01_initial_with_points.png"))
     
     # Find Target Points (Offline Tracking)
-    print("  Computing target points by tracking Initial -> Target...")
+    _log(verbose, "Computing target points from initial -> target...")
     video_stack = np.stack([initial_image, target_image])
     video_tensor = torch.from_numpy(video_stack).permute(0, 3, 1, 2).unsqueeze(0).to(device).float()
     
     tracks, visibles = tracker.track(video_tensor, initial_points)
     if tracks is None:
-        print("ERROR: Tracker failed. Aborting.")
+        print("Tracker failed.")
         return
     
     target_points = tracks[0, :, 1, :].cpu().numpy()
     target_visibles = visibles[0, :, 1].cpu().numpy()
     
-    print(f"  Target point coordinate range: x=[{target_points[:, 0].min():.1f}, {target_points[:, 0].max():.1f}], y=[{target_points[:, 1].min():.1f}, {target_points[:, 1].max():.1f}]")
-    
     vis_target = visualize_points(target_image, target_points, color=(0, 255, 0), radius=3)
     Image.fromarray(vis_target).save(os.path.join(log_dir, "01_target_with_points.png"))
-    print(f"  Saved: 01_target_with_points.png")
-    print(f"  Visible target points: {target_visibles.sum()}/{len(target_visibles)}")
+    _log(verbose, f"Visible target points: {target_visibles.sum()}/{len(target_visibles)}")
     
     # 4. Initialize Model
-    print("Initializing FlowGuidedGaussianDynamicsModel...")
+    print(f"Renderer: {renderer_backend}/{render_execution_mode}")
     
     # Load camera/control from JSON if available
     transform_matrix = None
@@ -341,8 +299,6 @@ def run_cotracker_mpc(
             camera_number = int(camera_name.replace('cam', ''))
             camera_idx = camera_number - 1
             
-            print(f"[Camera Selection] Detected camera: {camera_name} (camera_number={camera_number}, camera_idx={camera_idx})")
-            
             if 0 <= camera_idx < len(cameras_meta):
                 camera_meta = cameras_meta[camera_idx]
                 transform_matrix = np.array(camera_meta['transform_matrix'], dtype=np.float32)
@@ -350,10 +306,6 @@ def run_cotracker_mpc(
                 focal_y = camera_meta.get('fl_y') or camera_meta.get('focal_length')
                 cx = camera_meta.get('cx', image_width / 2.0)
                 cy = camera_meta.get('cy', image_height / 2.0)
-                
-                print(f"[Camera Selection] focal_x={focal_x}, focal_y={focal_y}, cx={cx}, cy={cy}")
-                print(f"[Camera Selection] transform_matrix shape: {transform_matrix.shape}")
-                
                 # Match frame by initial_image filename to get joint_pos
                 image_filename = os.path.basename(initial_image_path)
                 for frame in frames:
@@ -376,12 +328,16 @@ def run_cotracker_mpc(
         focal_x=focal_x,
         focal_y=focal_y,
         cx=cx,
-        cy=cy
+        cy=cy,
+        renderer_backend=renderer_backend,
+        render_execution_mode=render_execution_mode,
+        render_batch_size=render_batch_size,
+        render_cache_size=render_cache_size,
+        render_mode=render_mode,
+        render_dedup_key_mode=render_dedup_key_mode,
     )
     
     # 5. Setup MPC Optimizer
-    print("Setting up MPC Optimizer...")
-    
     # Define Objective
     point_tracking_obj = PointTrackingObjective(
         tracker=tracker,
@@ -403,9 +359,7 @@ def run_cotracker_mpc(
     
     # Optimizer Selection: CEM vs CEM-GD
     if optimizer_type == 'cem-gd':
-        print(f"Using CEM-GD optimizer (hybrid sampling + gradient descent)")
-        print(f"  Samples: init={num_samples_init}, replan={num_samples_replan}")
-        print(f"  Gradient refinement: top-{num_grad_seqs} seqs, lr={grad_lr}, steps={grad_steps}")
+        print(f"Optimizer: cem-gd (init={num_samples_init}, replan={num_samples_replan}, grad_steps={grad_steps})")
         
         optimizer = CEMGDOptimizer(
             model=model,
@@ -418,15 +372,14 @@ def run_cotracker_mpc(
             elites_frac=0.1,
             opt_iters=opt_iters,
             alpha=0.1,
-            verbose=True,
+            verbose=verbose,
             num_grad_opt_seqs=num_grad_seqs,
             start_lr=grad_lr,
             max_iterations=grad_steps,
             gradient_device=gradient_device,
         )
     else:  # 'cem'
-        print(f"Using CEM optimizer (pure sampling)")
-        print(f"  Samples: {num_samples}, iterations: {opt_iters}")
+        print(f"Optimizer: cem (samples={num_samples}, iters={opt_iters})")
         
         optimizer = CEMOptimizer(
             model=model,
@@ -437,7 +390,7 @@ def run_cotracker_mpc(
             num_samples=num_samples,
             elites_frac=0.1,
             opt_iters=opt_iters,
-            verbose=True
+            verbose=verbose
         )
     
     agent = SimplePlanningAgent(
@@ -448,7 +401,7 @@ def run_cotracker_mpc(
     )
     
     # 6. MPC Loop
-    print("Starting MPC Loop...")
+    print(f"Planning steps: {num_steps}, horizon: {horizon}")
     
     current_tracked_points = initial_points.copy()
     current_image = initial_image.copy()
@@ -459,7 +412,7 @@ def run_cotracker_mpc(
     # Initial observation
     # Render initial state to ensure consistency
     initial_action_tensor = torch.tensor(initial_control, dtype=torch.float32, device=device)
-    initial_rendered = model.render_with_control(initial_action_tensor) # (3, H, W)
+    initial_rendered = model.render_with_control(initial_action_tensor, time=0.0) # (3, H, W)
     initial_rendered_np = initial_rendered.permute(1, 2, 0).cpu().numpy()
     
     obs_history = ObservationList(
@@ -474,7 +427,7 @@ def run_cotracker_mpc(
     actions.append(initial_control.copy())
     
     for step in range(1, num_steps + 1):
-        print(f"\nStep {step}/{num_steps}")
+        print(f"Step {step}/{num_steps}")
         
         # Set Goal
         agent.set_goal({
@@ -489,12 +442,10 @@ def run_cotracker_mpc(
         action = np.clip(action, -action_limit, action_limit)
         
         actions.append(action)
-        print(f"  Action (first 5 dims): [{', '.join([f'{a:.4f}' for a in action[:5]])}...]")
-        print(f"  Action magnitude: {np.linalg.norm(action):.4f}")
-        
         # Render next frame
         action_tensor = torch.tensor(action, dtype=torch.float32, device=device)
-        next_image_tensor = model.render_with_control(action_tensor)
+        step_time = float(step) / float(max(num_steps, 1))
+        next_image_tensor = model.render_with_control(action_tensor, time=step_time)
         next_image_np = next_image_tensor.permute(1, 2, 0).cpu().numpy()
         
         # Save rendered image
@@ -515,8 +466,7 @@ def run_cotracker_mpc(
         
         # Compute distance to target
         dist = np.linalg.norm(new_points - target_points, axis=-1).mean()
-        print(f"  Avg Distance to Target: {dist:.4f} pixels")
-        print(f"  Visible points: {new_visibles.sum()}/{len(new_visibles)}")
+        print(f"  dist={dist:.4f}px visible={new_visibles.sum()}/{len(new_visibles)}")
         
         # Update state
         current_tracked_points = new_points
@@ -529,7 +479,7 @@ def run_cotracker_mpc(
         obs_history.append(new_obs)
         observations.append(next_image_np)
 
-    print("Done.")
+    print(f"Done. Outputs saved to {log_dir}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -543,7 +493,7 @@ if __name__ == "__main__":
     parser.add_argument("--image_height", type=int, default=480)
     parser.add_argument("--image_width", type=int, default=480)
     parser.add_argument("--device", type=str, default="cuda:3")
-    parser.add_argument("--output_dir", type=str, default="./outputs/cotracker_demo")
+    parser.add_argument("--output_dir", type=str, default="./outputs/point_tracking_mpc")
     
     # Optimizer selection
     parser.add_argument("--optimizer", type=str, default="cem-gd", choices=["cem", "cem-gd"],
@@ -572,27 +522,33 @@ if __name__ == "__main__":
     # Point sampling and constraints
     parser.add_argument("--num_tracking_points", type=int, default=256)
     parser.add_argument("--sampling_method", type=str, default="motion_mask",
-                        choices=["sobel_hybrid", "shi_tomasi", "combined", "texture", "grid", "motion_mask"])
+                        choices=["shi_tomasi", "combined", "texture", "grid", "motion_mask"])
     parser.add_argument("--action_limit", type=float, default=1.0,
                         help="Maximum action magnitude per step")
-    parser.add_argument("--resample_motion_mask_per_step", action="store_true", default=False,
-                        help="Re-sample motion mask at every MPC step (only with --sampling_method=motion_mask)")
+    parser.add_argument("--renderer_backend", type=str, default="gsplat",
+                        choices=["legacy", "gsplat", "fast_gauss"],
+                        help="Inference renderer backend")
+    parser.add_argument("--render_execution_mode", type=str, default="process",
+                        choices=["inprocess", "process"],
+                        help="Render execution mode")
+    parser.add_argument("--render_batch_size", type=int, default=8,
+                        help="Batch size hint for inference renderer")
+    parser.add_argument("--render_cache_size", type=int, default=16,
+                        help="LRU cache size for rendered frames")
+    parser.add_argument("--render_mode", type=str, default="RGB",
+                        choices=["RGB", "RGB+D"],
+                        help="Render output mode")
+    parser.add_argument("--render_dedup_key_mode", type=str, default="timestamp_control",
+                        choices=["timestamp", "timestamp_control"],
+                        help="Render de-duplication key mode")
+    parser.add_argument("--verbose", action="store_true", default=False,
+                        help="Enable detailed runtime logging")
     
     args = parser.parse_args()
     
     args.device = actual_device
     
-    if args.device.startswith('cuda'):
-        print(f"\n[PyTorch Verification]")
-        print(f"  args.device = {args.device}")
-        print(f"  torch.cuda.is_available() = {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            print(f"  torch.cuda.current_device() = {torch.cuda.current_device()}")
-            print(f"  torch.cuda.get_device_name(0) = {torch.cuda.get_device_name(0)}")
-            print(f"  Physical GPU ID (from CUDA_VISIBLE_DEVICES) = {actual_device_id}")
-        print()
-    
-    run_cotracker_mpc(
+    run_point_tracking_mpc(
         model_path=args.model_path,
         iteration=30000,
         initial_image_path=args.initial_image,
@@ -617,5 +573,11 @@ if __name__ == "__main__":
         num_tracking_points=args.num_tracking_points,
         sampling_method=args.sampling_method,
         action_limit=args.action_limit,
-        resample_motion_mask_per_step=args.resample_motion_mask_per_step,
+        renderer_backend=args.renderer_backend,
+        render_execution_mode=args.render_execution_mode,
+        render_batch_size=args.render_batch_size,
+        render_cache_size=args.render_cache_size,
+        render_mode=args.render_mode,
+        render_dedup_key_mode=args.render_dedup_key_mode,
+        verbose=args.verbose,
     )

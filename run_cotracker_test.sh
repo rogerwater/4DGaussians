@@ -1,6 +1,6 @@
 #!/bin/bash
-# 快速测试render_based光流方法 - 支持CEM-GD优化器
-# Quick test script for render-based flow method - supports CEM-GD optimizer
+# 点跟踪 MPC 快速测试脚本
+# Quick test script for point-tracking MPC
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -65,7 +65,15 @@ RESAMPLE_MOTION_MASK="${RESAMPLE_MOTION_MASK:-true}"  # 每步重采样运动掩
 IMAGE_HEIGHT="${IMAGE_HEIGHT:-480}"
 IMAGE_WIDTH="${IMAGE_WIDTH:-480}"
 ACTION_LIMIT="${ACTION_LIMIT:-1.0}"
-OUTPUT_DIR="${OUTPUT_DIR:-outputs/cemgd-push8-traj0-full}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/point-tracking-mpc-test}"
+
+# 推理渲染参数 (Inference Renderer Parameters)
+RENDERER_BACKEND="${RENDERER_BACKEND:-gsplat}"                # 可选: legacy, gsplat, fast_gauss
+RENDER_EXECUTION_MODE="${RENDER_EXECUTION_MODE:-process}"     # 可选: inprocess, process
+RENDER_BATCH_SIZE="${RENDER_BATCH_SIZE:-8}"                   # 建议 1~64
+RENDER_CACHE_SIZE="${RENDER_CACHE_SIZE:-16}"                  # 建议 0~256
+RENDER_MODE="${RENDER_MODE:-RGB}"                             # 可选: RGB, RGB+D
+RENDER_DEDUP_KEY_MODE="${RENDER_DEDUP_KEY_MODE:-timestamp_control}"  # 可选: timestamp, timestamp_control
 
 # ============================================================================
 
@@ -86,6 +94,12 @@ fi
 echo -e "MPC Steps:          ${NUM_STEPS}"
 echo -e "Horizon:            ${HORIZON}"
 echo -e "Sampling method:    ${SAMPLING_METHOD}"
+echo -e "Renderer backend:   ${RENDERER_BACKEND}"
+echo -e "Render exec mode:   ${RENDER_EXECUTION_MODE}"
+echo -e "Render batch size:  ${RENDER_BATCH_SIZE}"
+echo -e "Render cache size:  ${RENDER_CACHE_SIZE}"
+echo -e "Render mode:        ${RENDER_MODE}"
+echo -e "Render dedup key:   ${RENDER_DEDUP_KEY_MODE}"
 echo -e "Output directory:   ${OUTPUT_DIR}"
 
 # 检查模型和图像
@@ -134,6 +148,12 @@ COMMON_ARGS=(
     --sampling_method "$SAMPLING_METHOD"
     --action_limit "$ACTION_LIMIT"
     --optimizer "$OPTIMIZER"
+    --renderer_backend "$RENDERER_BACKEND"
+    --render_execution_mode "$RENDER_EXECUTION_MODE"
+    --render_batch_size "$RENDER_BATCH_SIZE"
+    --render_cache_size "$RENDER_CACHE_SIZE"
+    --render_mode "$RENDER_MODE"
+    --render_dedup_key_mode "$RENDER_DEDUP_KEY_MODE"
 )
 
 # 添加 CEM 或 CEM-GD 特定参数
@@ -157,12 +177,8 @@ else
 fi
 
 # 添加重采样标志
-if [ "$RESAMPLE_MOTION_MASK" = "true" ]; then
-    COMMON_ARGS+=(--resample_motion_mask_per_step)
-fi
-
 # 运行MPC
-python3 test/integration/test_cotracker_mpc.py "${COMMON_ARGS[@]}"
+python3 point_tracking_mpc.py "${COMMON_ARGS[@]}"
 
 EXIT_CODE=$?
 

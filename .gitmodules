@@ -11,3 +11,9 @@
 [submodule "submodules/diff-gaussian-rasterization"]
 	path = submodules/diff-gaussian-rasterization
 	url = https://github.com/Zerg-Overmind/diff-gaussian-rasterization.git
+[submodule "gsplat"]
+	path = gsplat
+	url = https://github.com/nerfstudio-project/gsplat.git
+[submodule "submodules/gsplat"]
+	path = submodules/gsplat
+	url = https://github.com/nerfstudio-project/gsplat.git

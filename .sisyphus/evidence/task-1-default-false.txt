@@ -1,3 +1,0 @@
-sampling_method: shi_tomasi
-resample_motion_mask_per_step: False
-TEST PASSED: Default is False for shi_tomasi

@@ -1,6 +1,0 @@
-CASE zero_vector_2d
-numpy finite: True contains_nan: False contains_inf: False
-torch finite: True contains_nan: False contains_inf: False
-numpy output: [0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.]
-torch output: tensor([0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.],
-       dtype=torch.float64)

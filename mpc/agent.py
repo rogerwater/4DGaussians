@@ -2,7 +2,6 @@ import os
 import abc
 
 import numpy as np
-from hydra.utils import instantiate
 
 
 class Agent(metaclass=abc.ABCMeta):
@@ -213,3 +212,12 @@ class RandomAgent(Agent):
         self.actions.append(np.copy(action))
         self.plan = self.plan[1:]
         return action
+
+
+__all__ = [
+    "Agent",
+    "DummyAgent",
+    "PlanningAgent",
+    "SimplePlanningAgent",
+    "RandomAgent",
+]

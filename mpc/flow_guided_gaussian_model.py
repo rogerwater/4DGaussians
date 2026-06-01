@@ -6,11 +6,9 @@ flow loss
 import os
 import torch
 import numpy as np
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 from mpc.gaussian_dynamics_model import GaussianDynamicsModel
 from mpc.important_gaussian_selector import ImportantGaussianSelector, FlowGuidedRenderer
-from utils.graphics_utils import getWorld2View2, getProjectionMatrix
-from utils.general_utils import build_rotation, build_scaling_rotation
 
 
 class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
@@ -40,6 +38,13 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
         focal_y = None,
         cx = None,
         cy = None,
+        # inference renderer config
+        renderer_backend: str = "legacy",
+        render_execution_mode: str = "inprocess",
+        render_batch_size: int = 8,
+        render_cache_size: int = 16,
+        render_mode: str = "RGB",
+        render_dedup_key_mode: str = "timestamp_control",
         # render_based方法需要的参数
         target_image = None,
         sample_coords = None,
@@ -61,18 +66,13 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
             focal_y=focal_y,
             cx=cx,
             cy=cy,
+            renderer_backend=renderer_backend,
+            render_execution_mode=render_execution_mode,
+            render_batch_size=render_batch_size,
+            render_cache_size=render_cache_size,
+            render_mode=render_mode,
+            render_dedup_key_mode=render_dedup_key_mode,
         )
-        
-        # 保存子类特有的参数
-        self.num_context = num_context
-        self.use_sparse_rendering = use_sparse_rendering
-        self.enable_flow_prediction = enable_flow_prediction
-        self.num_flow_points = num_flow_points
-        self.flow_prediction_method = flow_prediction_method
-        
-        # 保存render_based方法需要的参数
-        self.target_image = target_image
-        self.sample_coords = sample_coords
         
         # 保存子类特有的参数
         self.num_context = num_context
@@ -315,7 +315,8 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
             
             with torch.no_grad():
                 # 渲染下一状态（应用当前control）
-                next_render = self.render_with_control(control_vec)
+                step_time = float(t + 1) / float(max(T, 1))
+                next_render = self.render_with_control(control_vec, time=step_time)
                 
                 # 准备GMFlow输入：(1, 3, H, W)
                 # 固定初始帧作为参考帧（初始帧 → 预测未来帧）
@@ -425,7 +426,8 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
                 # 【关键修复2】渲染下一状态：应用当前步的控制向量
                 # 注意：deformation网络训练时使用的是每一步的独立控制向量
                 # 不应该累积或平均，应该直接使用当前控制
-                next_render = self.render_with_control(control_vec)
+                step_time = float(t + 1) / float(max(T, 1))
+                next_render = self.render_with_control(control_vec, time=step_time)
                 
                 # 准备GMFlow输入：(1, 3, H, W)
                 # 固定初始帧作为参考帧（初始帧 → 预测未来帧）
@@ -704,25 +706,18 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
             
             # 3. 完整渲染（可选，更慢）
             if not self.use_sparse_rendering:
-                # render_with_control返回 (3, H, W)，需要转换为 (H, W, 3)
-                timestep_rgbs = []
-                for b in range(B):
-                    full_rgb = self.render_with_control(control_vec[b], grad_enabled=grad_enabled)
-                    
-                    if grad_enabled:
-                        # 保留tensor用于梯度计算
-                        full_rgb_hwc = full_rgb.permute(1, 2, 0)  # (H, W, 3) tensor
-                    else:
-                        # 转换为numpy（原始行为）
-                        full_rgb_hwc = full_rgb.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
-                    timestep_rgbs.append(full_rgb_hwc)
-                
+                time_batch = self._default_time_batch(B, horizon_step=t, horizon_total=T)
+                full_rgb_batch = self.render_batch_with_controls(
+                    control_batch=control_vec,
+                    time_batch=time_batch,
+                    grad_enabled=grad_enabled,
+                    render_mode="RGB",
+                )[:, :3]  # (B, 3, H, W)
+
                 if grad_enabled:
-                    # 返回torch.stack保留梯度
-                    predictions['rgb'].append(torch.stack(timestep_rgbs, dim=0))  # (B, H, W, 3) tensor
+                    predictions['rgb'].append(full_rgb_batch.permute(0, 2, 3, 1))  # (B, H, W, 3)
                 else:
-                    # 返回numpy（原始行为）
-                    predictions['rgb'].append(np.stack(timestep_rgbs, axis=0))  # (B, H, W, 3)
+                    predictions['rgb'].append(full_rgb_batch.permute(0, 2, 3, 1).cpu().numpy())  # (B, H, W, 3)
             
             # 更新当前光流
             current_flow = next_flow
@@ -771,25 +766,19 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
         """生成fallback RGB图像"""
         fallback_rgbs = []
         for t in range(T):
-            control_vec = torch.tensor(
-                pred_actions[:, t], 
-                dtype=torch.float32, 
-                device=self.device
-            )
-            timestep_rgbs = []
-            for b in range(B):
-                full_rgb = self.render_with_control(control_vec[b], grad_enabled=grad_enabled)
-                
-                if grad_enabled:
-                    full_rgb_hwc = full_rgb.permute(1, 2, 0)  # (H, W, 3) tensor
-                else:
-                    full_rgb_hwc = full_rgb.permute(1, 2, 0).cpu().numpy()  # (H, W, 3)
-                timestep_rgbs.append(full_rgb_hwc)
-            
+            control_vec = torch.tensor(pred_actions[:, t], dtype=torch.float32, device=self.device)
+            time_batch = self._default_time_batch(B, horizon_step=t, horizon_total=T)
+            full_rgb_batch = self.render_batch_with_controls(
+                control_batch=control_vec,
+                time_batch=time_batch,
+                grad_enabled=grad_enabled,
+                render_mode="RGB",
+            )[:, :3]  # (B, 3, H, W)
+
             if grad_enabled:
-                fallback_rgbs.append(torch.stack(timestep_rgbs, dim=0))
+                fallback_rgbs.append(full_rgb_batch.permute(0, 2, 3, 1))
             else:
-                fallback_rgbs.append(np.stack(timestep_rgbs, axis=0))
+                fallback_rgbs.append(full_rgb_batch.permute(0, 2, 3, 1).cpu().numpy())
         
         if grad_enabled:
             return torch.stack(fallback_rgbs, dim=1)  # (B, T, H, W, 3)
@@ -982,40 +971,3 @@ class FlowGuidedGaussianDynamicsModel(GaussianDynamicsModel):
             "reduction_ratio": reduction_ratio,
             "speedup_estimate": 1 / (1 - reduction_ratio + 0.1),  # 粗略估计
         }
-
-
-# 使用示例
-if __name__ == "__main__":
-    # 初始化光流引导的Gaussian模型
-    model = FlowGuidedGaussianDynamicsModel(
-        model_path="/path/to/4dgs/model",
-        iteration=5000,
-        control_dim=15,
-        image_height=256,
-        image_width=256,
-        num_context=2,
-        # 新参数
-        use_sparse_rendering=True,
-        sparse_ratio=0.15,  # 只渲染15%的高斯
-        enable_flow_prediction=True,
-        flow_prediction_method="learned",
-        num_flow_points=512,
-    )
-    
-    print("✓ 光流引导Gaussian模型初始化完成")
-    
-    # 测试预测
-    batch = {
-        'actions': np.random.randn(2, 12, 15),  # (B=2, T=12, D=15)
-        'video': np.random.randn(2, 2, 256, 256, 3),  # (B, context=2, H, W, 3)
-    }
-    
-    predictions = model(batch)
-    print(f"预测光流形状: {predictions['flow'].shape}")
-    print(f"预测图像形状: {predictions['rgb'].shape}")
-    
-    # 查看渲染开销
-    cost_stats = model.compute_rendering_cost()
-    print(f"\n渲染开销统计:")
-    for k, v in cost_stats.items():
-        print(f"  {k}: {v}")

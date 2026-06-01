@@ -1,10 +1,9 @@
 import numpy as np
 from mpc.constraint_utils import project_joint_angles_torch, check_angular_velocity_constraint
 import time
-from hydra.utils import instantiate
 
 from mpc.optimizer import Optimizer
-from mpc.utils import ObservationList, write_moviepy_gif
+from mpc.utils import ObservationList
 
 
 class CEMOptimizer(Optimizer):
